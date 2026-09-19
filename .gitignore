@@ -5,3 +5,5 @@ ENFORCE_OFF
 cache.db
 runs/
 state/
+config.json
+HOOK_DEBUG
