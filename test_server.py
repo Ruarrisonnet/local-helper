@@ -36,6 +36,20 @@ with open(noisy, "w") as f:
 PY = sys.executable.replace("\\", "/")
 NOISY = noisy.replace("\\", "/")
 
+# v1.2 fixtures. A small project for local_map (node_modules must be skipped, binaries flagged) ...
+proj = tempfile.mkdtemp(prefix="lh_proj_")
+os.makedirs(os.path.join(proj, "sub"))
+os.makedirs(os.path.join(proj, "node_modules", "dep"))
+open(os.path.join(proj, "app.py"), "w").write("def alpha():\n    pass\n\nclass Beta:\n    def inner(self):\n        pass\n")
+open(os.path.join(proj, "sub", "web.js"), "w").write("export function gamma() {}\nconst delta = () => 1\n")
+open(os.path.join(proj, "node_modules", "dep", "junk.js"), "w").write("function shouldNotAppear() {}\n")
+open(os.path.join(proj, "logo.png"), "wb").write(b"\x89PNG" + b"\0" * 2048)
+# ... and a settings file with Bash rules that local_run must honour. The matched commands are
+# harmless even if the rule check failed and they ran: the rm target does not exist, cwd is no repo.
+rules_file = os.path.join(tempfile.gettempdir(), f"lh_rules_{NONCE}.json")
+json.dump({"permissions": {"deny": ["Bash(rm -rf *)"], "ask": ["Bash(git push:*)"]}}, open(rules_file, "w"))
+os.environ["LOCAL_HELPER_EXTRA_SETTINGS"] = rules_file
+
 summ_q = "How does this code detect that the Claude account usage limit has been hit? Name the function."
 msgs = [
     {"jsonrpc": "2.0", "id": 1, "method": "initialize",
@@ -43,8 +57,8 @@ msgs = [
     {"jsonrpc": "2.0", "method": "notifications/initialized"},
     "this is not json",
     {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
-    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "local_summarize", "arguments": {
-        "path": TARGET, "max_words": 120, "question": summ_q}}},
+    {"jsonrpc": "2.0", "id": 3, "method": "tools/call", "params": {"name": "local_summarize", "_meta": {"progressToken": "p-sum"},
+        "arguments": {"path": TARGET, "max_words": 120, "question": summ_q}}},
     {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "local_extract", "arguments": {
         "path": TARGET, "what": f"top-level function definitions (lines starting with 'def ' at column 0); give the function name"}}},
     {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "local_classify", "arguments": {
@@ -63,6 +77,14 @@ msgs = [
         "command": "Start-Sleep -Seconds 30", "shell": "powershell", "timeout": 3}}},
     {"jsonrpc": "2.0", "id": 13, "method": "tools/call", "params": {"name": "local_run", "arguments": {
         "command": f"'{PY}' '{NOISY}'", "shell": "bash", "question": "Which test failed and why?"}}},
+    # v1.2
+    {"jsonrpc": "2.0", "id": 14, "method": "tools/call", "params": {"name": "local_map", "arguments": {"root": proj}}},
+    {"jsonrpc": "2.0", "id": 15, "method": "tools/call", "params": {"name": "local_run", "arguments": {
+        "command": "echo first && rm -rf /tmp/lh_does_not_exist_" + NONCE, "shell": "bash", "cwd": proj}}},
+    {"jsonrpc": "2.0", "id": 16, "method": "tools/call", "params": {"name": "local_run", "arguments": {
+        "command": "git push origin main", "shell": "bash", "cwd": proj}}},
+    {"jsonrpc": "2.0", "id": 17, "method": "tools/call", "params": {"name": "local_run", "arguments": {
+        "command": "echo rules-allow-this", "shell": "bash", "cwd": proj}}},
     {"jsonrpc": "2.0", "id": 7, "method": "tools/call", "params": {"name": "local_stats", "arguments": {}}},
 ]
 stdin = "\n".join(m if isinstance(m, str) else json.dumps(m) for m in msgs) + "\n"
@@ -74,15 +96,23 @@ print(f"server ran {time.time() - t0:.0f}s, exit {out.returncode}")
 if out.stderr.strip():
     print("STDERR:", out.stderr)
 os.remove(noisy)
-try:
-    os.remove(os.environ["LOCAL_HELPER_CACHE_DB"])
-except OSError:
-    pass
+for f in (os.environ["LOCAL_HELPER_CACHE_DB"], rules_file):
+    try:
+        os.remove(f)
+    except OSError:
+        pass
+import shutil
+shutil.rmtree(proj, ignore_errors=True)
 
-res = {}
+res, notes, order = {}, [], []
 for line in out.stdout.splitlines():
     m = json.loads(line)
-    res[m.get("id")] = m
+    if "method" in m:                     # server -> client notification (progress)
+        notes.append(m)
+        order.append("note")
+    else:
+        res[m.get("id")] = m
+        order.append(m.get("id"))
 
 
 def text(i):
@@ -91,11 +121,21 @@ def text(i):
 
 checks = []
 init = res[1]["result"]
-checks.append(("initialize: version 1.1.0 + instructions", init["serverInfo"]["version"] == "1.1.0"
-               and "local_outline" in init.get("instructions", "")))
+checks.append(("initialize: version 1.2.0 + instructions mention local_map", init["serverInfo"]["version"] == "1.2.0"
+               and "local_map" in init.get("instructions", "")))
 checks.append(("parse error answered, server survived", None in res and 7 in res))
 tools = {t["name"]: t for t in res[2]["result"]["tools"]}
-checks.append((f"7 tools listed ({len(tools)})", len(tools) == 7))
+checks.append((f"8 tools listed ({len(tools)})", len(tools) == 8))
+
+# progress: one notification per section of the first summarize (llm.py = 3 sections at 12k chars),
+# carrying the client's token, all emitted before that call's result.
+sum_notes = [n for n in notes if n["params"].get("progressToken") == "p-sum"]
+first_note, result3 = order.index("note") if "note" in order else -1, order.index(3)
+checks.append((f"progress: {len(sum_notes)} notifications for summarize, token echoed, totals consistent",
+               len(sum_notes) == 3 and [n["params"]["progress"] for n in sum_notes] == [1, 2, 3]
+               and all(n["params"]["total"] == 3 for n in sum_notes)))
+checks.append(("progress: notifications arrive before the result", 0 <= first_note < result3))
+checks.append(("progress: only the call that asked for it gets notifications", len(notes) == len(sum_notes)))
 checks.append(("annotations: outline read-only, run destructive",
                tools["local_outline"]["annotations"]["readOnlyHint"] is True
                and tools["local_run"]["annotations"]["destructiveHint"] is True))
@@ -155,6 +195,21 @@ checks.append(("run: timeout kills and reports", "TIMED OUT" in r3))
 r4 = text(13)
 print("\n--- local_run with question:\n" + r4[-700:])
 checks.append(("run+question: model names the failing test", "test_payment_refund" in r4.split("-- answer from", 1)[-1]))
+
+mp = text(14)
+print("\n--- local_map (fixture project):\n" + mp)
+checks.append(("map: symbols from py and js files", all(s in mp for s in ("alpha", "Beta", "gamma", "delta"))))
+checks.append(("map: nested method not listed (top-level only)", "inner" not in mp))
+checks.append(("map: node_modules skipped", "shouldNotAppear" not in mp and "node_modules" not in mp))
+checks.append(("map: binary flagged, subdirectory grouped", "binary" in mp and "sub/" in mp))
+
+r15, r16, r17 = res[15]["result"], res[16]["result"], res[17]["result"]
+checks.append(("rules: deny rule refuses a matching sub-command",
+               r15.get("isError") is True and "permissions.deny" in r15["content"][0]["text"]))
+checks.append(("rules: ask rule refuses and points to the Bash tool",
+               r16.get("isError") is True and "permissions.ask" in r16["content"][0]["text"]
+               and "Bash tool" in r16["content"][0]["text"]))
+checks.append(("rules: unmatched command runs", not r17.get("isError") and "rules-allow-this" in r17["content"][0]["text"]))
 
 print("\n--- stats:\n" + text(7))
 print()

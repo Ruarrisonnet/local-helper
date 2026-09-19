@@ -18,7 +18,7 @@ import urllib.request
 
 import outline
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 HERE = os.path.dirname(os.path.abspath(__file__))
 USAGE_LOG = os.path.join(HERE, "usage.jsonl")
 CACHE_DB = os.environ.get("LOCAL_HELPER_CACHE_DB") or os.path.join(HERE, "cache.db")
@@ -240,8 +240,10 @@ def tool_summarize(args):
 
 def summarize_text(text, label, q, max_words):
     model, notes, evidence, dropped, n = None, [], {}, 0, 0
-    for first, body, lines in _each_chunk(text):
+    parts = list(_each_chunk(text))
+    for first, body, lines in parts:
         n += 1
+        progress(n, len(parts), f"summarize: section {n}/{len(parts)}")
         prompt = (f"Source: {label} (section {n})\nQuestion: {q}\n\n<text>\n{body}\n</text>\n\n"
                   f"Answer in at most {max_words} words, then the EVIDENCE lines.")
         model, ans = run_llm(SUMMARY_SYSTEM, prompt, max_tokens=max_words * 2 + 200)
@@ -282,8 +284,10 @@ def tool_extract(args):
 
 def extract_text(text, what):
     model, hits, dropped, n = None, {}, 0, 0
-    for first, body, lines in _each_chunk(text, EXTRACT_CHUNK_CHARS):
+    parts = list(_each_chunk(text, EXTRACT_CHUNK_CHARS))
+    for first, body, lines in parts:
         n += 1
+        progress(n, len(parts), f"extract: section {n}/{len(parts)}")
         prompt = f"Request: lines containing {what}\n\n<text>\n{body}\n</text>"
         model, ans = run_llm(EXTRACT_SYSTEM, prompt, max_tokens=1500)
         if NOT_FOUND in ans.upper():
@@ -328,6 +332,72 @@ def tool_draft(args):
     return header(rec) + ans
 
 
+# ---------------------------------------------------------------- progress (MCP notifications/progress)
+# Long model calls take 10-90s. When the client sends a progressToken, report each finished section
+# so the user sees movement instead of a frozen tool call.
+_PROGRESS = {"token": None}
+
+
+def progress(done, total, message):
+    if _PROGRESS["token"] is None:
+        return
+    send({"jsonrpc": "2.0", "method": "notifications/progress",
+          "params": {"progressToken": _PROGRESS["token"], "progress": done, "total": total, "message": message}})
+
+
+# ---------------------------------------------------------------- local_run permission rules
+# local_run executes commands itself, so Claude Code's Bash(...) rules never see them. Re-apply the
+# user's deny and ask rules here: deny -> refused, ask -> refused with "use the Bash tool so Claude
+# Code can ask you". Allow rules are not needed: local_run is itself a permission-gated tool.
+
+def _rule_sources(cwd):
+    home = os.path.join(os.path.expanduser("~"), ".claude")
+    files = [os.path.join(home, "settings.json"), os.path.join(home, "settings.local.json")]
+    if cwd:
+        files += [os.path.join(cwd, ".claude", "settings.json"), os.path.join(cwd, ".claude", "settings.local.json")]
+    extra = os.environ.get("LOCAL_HELPER_EXTRA_SETTINGS")    # tests point this at a temp settings file
+    return files + ([extra] if extra else [])
+
+
+def _load_rules(cwd, tool):
+    rules = {"deny": [], "ask": []}
+    for f in _rule_sources(cwd):
+        try:
+            perms = json.load(open(f, encoding="utf-8")).get("permissions") or {}
+        except (OSError, ValueError):
+            continue
+        for kind in rules:
+            for r in perms.get(kind) or []:
+                if r == tool:
+                    rules[kind].append((r, None))              # bare "Bash" = every command
+                elif r.startswith(tool + "(") and r.endswith(")"):
+                    rules[kind].append((r, r[len(tool) + 1:-1]))
+    return rules
+
+
+def _rule_matches(pat, cmd):
+    if pat is None:
+        return True
+    pat = pat.strip()
+    if pat.endswith(":*"):                                     # legacy prefix syntax, e.g. Bash(npm:*)
+        prefix = pat[:-2]
+        return cmd == prefix or cmd.startswith(prefix + " ")
+    rx = "^" + ".*".join(re.escape(part) for part in pat.split("*")) + "$"
+    return re.match(rx, cmd, re.S) is not None
+
+
+def rule_block(cmd, cwd, shell):
+    """(kind, rule) of the first deny/ask rule matching the command or any sub-command, else None."""
+    tool = "PowerShell" if shell == "powershell" else "Bash"
+    rules = _load_rules(cwd, tool)
+    subs = [s.strip() for s in re.split(r"&&|\|\||;|\||\n", cmd) if s.strip()] + [cmd.strip()]
+    for kind in ("deny", "ask"):
+        for raw, pat in rules[kind]:
+            if any(_rule_matches(pat, s) for s in subs):
+                return kind, raw
+    return None
+
+
 def tool_outline(args):
     t0 = time.time()
     text, label = load_input(args)
@@ -335,6 +405,16 @@ def tool_outline(args):
     rec = log_usage("local_outline", "none (deterministic)", len(text), len(body), time.time() - t0, 0)
     return (f"[local-helper | outline | EXACT (pattern match, no model) | ~{rec['in_tok']:,} tok in -> "
             f"~{rec['out_tok']:,} tok out]\n" + body)
+
+
+def tool_map(args):
+    t0 = time.time()
+    root = os.path.expanduser(args.get("root") or os.getcwd())
+    if not os.path.isdir(root):
+        raise ValueError(f"not a directory: {root}")
+    body = outline.map_dir(root, int(args.get("max_chars", 12000)))
+    log_usage("local_map", "none (deterministic)", 0, len(body), time.time() - t0, 0)
+    return f"[local-helper | map | EXACT (no model) | {time.time() - t0:.1f}s]\n" + body
 
 
 def _bash():
@@ -370,6 +450,14 @@ def tool_run(args):
     cwd = os.path.expanduser(args.get("cwd") or os.getcwd())
     shell = args.get("shell") or ("bash" if _bash() else "powershell")
     timeout = min(int(args.get("timeout", 600)), 1800)
+    blocked = rule_block(cmd, cwd, shell)
+    if blocked:
+        kind, rule = blocked
+        tool = "PowerShell" if shell == "powershell" else "Bash"
+        raise PermissionError(
+            f"refused: your permissions.{kind} rule {rule} matches this command, and local_run does not "
+            f"bypass your rules. " + ("Don't run it." if kind == "deny" else
+            f"Run it with the {tool} tool instead so Claude Code can ask the user."))
     if shell == "bash":
         if not _bash():
             raise RuntimeError("no Git Bash found; pass shell='powershell'")
@@ -437,6 +525,16 @@ TOOLS = {
                        "large file, then Read only the ranges you need.",
         "inputSchema": {"type": "object", "properties": {**SRC,
             "max_items": {"type": "integer", "default": 120}}}}),
+    "local_map": (tool_map, {
+        "annotations": {"readOnlyHint": True, "openWorldHint": False},
+        "description": "INSTANT map of a whole project, no model: every file grouped by directory with its line "
+                       "count and top-level definitions (functions/classes; headings for markdown). Respects "
+                       ".gitignore in git repos, skips node_modules/venv/build dirs. Use it to get oriented in an "
+                       "unfamiliar codebase instead of many Glob/Read calls. Output is capped (default 12000 "
+                       "chars); detail degrades gracefully, so pass a subdirectory as root for more.",
+        "inputSchema": {"type": "object", "properties": {
+            "root": {"type": "string", "description": "Absolute directory path (default: server cwd)."},
+            "max_chars": {"type": "integer", "default": 12000}}}}),
     "local_run": (tool_run, {
         "annotations": {"readOnlyHint": False, "destructiveHint": True, "openWorldHint": True},
         "description": "Run a shell command whose output would be long (test suites, builds, installs, "
@@ -444,8 +542,9 @@ TOOLS = {
                        "duration, first/last lines and grouped error lines; full output is saved to a log "
                        "file you can Read in windows. Short output (<6KB) comes back verbatim. Pass "
                        "'question' to also get a local-model answer about the output (slower). Uses Git "
-                       "Bash by default; shell='powershell' for PowerShell syntax. NOTE: runs outside Claude "
-                       "Code's Bash permission rules, so apply the same care you would to a Bash call.",
+                       "Bash by default; shell='powershell' for PowerShell syntax. Commands matching the user's "
+                       "Bash/PowerShell deny or ask permission rules are refused; for an 'ask' command, use the "
+                       "Bash tool so Claude Code can ask.",
         "inputSchema": {"type": "object", "properties": {
             "command": {"type": "string"},
             "cwd": {"type": "string", "description": "Working directory (absolute)."},
@@ -496,7 +595,8 @@ TOOLS = {
 # guidance travels with the server instead of depending on a CLAUDE.md being present.
 INSTRUCTIONS = (
     "local-helper runs a small local model plus exact pattern-matching tools on this machine, to keep "
-    "bulk text out of your context. Big file: local_outline first (instant, exact), then Read only the "
+    "bulk text out of your context. Unfamiliar project: local_map first (instant). "
+    "Big file: local_outline first (instant, exact), then Read only the "
     "line ranges you need; use local_summarize/local_extract when you need a question answered across "
     "the whole file. Noisy command (tests, builds, installs): local_run instead of Bash. Model output is "
     "UNVERIFIED: only the quoted L<n> lines are checked against the source, so Read the cited lines "
@@ -520,6 +620,7 @@ def handle(req):
     if method == "tools/call":
         name = req["params"]["name"]
         fn = TOOLS[name][0]
+        _PROGRESS["token"] = (req["params"].get("_meta") or {}).get("progressToken")
         try:
             text = fn(req["params"].get("arguments") or {})
             return {"content": [{"type": "text", "text": text}]}
@@ -527,6 +628,8 @@ def handle(req):
             msg = f"Ollama unreachable at {OLLAMA} ({e}). Start it with `ollama serve`, or just read the file directly."
         except Exception as e:
             msg = f"{type(e).__name__}: {e}"
+        finally:
+            _PROGRESS["token"] = None
         return {"content": [{"type": "text", "text": msg}], "isError": True}
     if method == "ping":
         return {}

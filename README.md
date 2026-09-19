@@ -11,16 +11,17 @@ Claude stays in charge: the local model only reads, it never plans or edits.
 | File | What it does |
 |---|---|
 | `server.py` | MCP server (stdlib only, no pip install). See the tool table below. |
-| `outline.py` | Instant outlines with exact line numbers (pattern matching, no model), shared by the server and the hook. |
-| `enforce.py` | PreToolUse hook. Denies full reads of files over 500 lines / 40KB. The deny message includes the file's outline, so Claude can go straight to a <=300-line window. |
-| `test_server.py` | 22 checks over real MCP stdio, against known answers from a real file. |
-| `test_enforce.py` | 17 allow/deny checks for the hook. |
+| `outline.py` | Instant file outlines and project maps with exact line numbers (pattern matching, no model), shared by the server and the hook. |
+| `enforce.py` | PreToolUse hook. Denies full reads of files over 500 lines / 40KB, and includes the file's outline so Claude can go straight to a <=300-line window. Also enforces a per-session paging limit, so a file can't be read whole 300 lines at a time. |
+| `test_server.py` | 32 checks over real MCP stdio, against known answers from a real file. |
+| `test_enforce.py` | 24 allow/deny checks for the hook, including the paging limit. |
 
 ## Tools
 
 | Tool | Model? | Use it for |
 |---|---|---|
-| `local_outline` | no, exact | A map of any large file: functions/classes with line numbers for code, headings for markdown, grouped error lines for logs. Instant. Start here. |
+| `local_map` | no, exact | A map of a whole project: files by directory with line counts and top-level definitions. Respects .gitignore. Use it to get oriented. |
+| `local_outline` | no, exact | A map of one large file: functions/classes with line numbers for code, headings for markdown, grouped error lines for logs. Instant. |
 | `local_run` | optional | Noisy commands (tests, builds, installs). Returns exit code, error lines grouped by shape with repeat counts, and the first/last lines; saves the full log. Pass `question` for a model answer on top. |
 | `local_summarize` | yes | A question that needs the whole file read. The answer comes with `L<n>:` lines that are checked against the source. |
 | `local_extract` | yes | Every line matching a description that Grep can't express. Around 85% recall. |
@@ -77,6 +78,9 @@ whenever Ollama isn't running.
 Settings you can override with environment variables: `LOCAL_HELPER_BIG`, `LOCAL_HELPER_SMALL`,
 `LOCAL_HELPER_MIN_FREE_GB`, `LOCAL_HELPER_OLLAMA`, `LOCAL_HELPER_CACHE_DB`.
 
-**`local_run` runs commands outside Claude Code's Bash permission rules.** Claude Code still asks
-permission for the `local_run` tool itself, and the tool is annotated as destructive, but your
-`Bash(...)` allow and deny rules don't apply to the commands it runs.
+**`local_run` and your permission rules.** `local_run` runs commands itself, so Claude Code's own checks
+never see them. To make up for that, it re-applies your `permissions.deny` and `permissions.ask` rules
+for `Bash(...)` / `PowerShell(...)` from user and project settings. Matching commands are refused, even
+after `&&`, `;` or `|`. Limits: a command wrapped in another shell (`bash -c "..."`) or a script is matched
+on its outer text only, and `allow` rules are not consulted (Claude Code asks permission for the
+`local_run` tool itself).

@@ -4,3 +4,4 @@ usage.jsonl
 ENFORCE_OFF
 cache.db
 runs/
+state/

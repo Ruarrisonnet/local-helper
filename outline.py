@@ -108,3 +108,99 @@ def outline_text(text, path="", max_items=80):
 def outline_file(path, max_items=80):
     with open(path, "r", encoding="utf-8", errors="replace") as f:
         return outline_text(f.read(), path, max_items)
+
+
+# ---------------------------------------------------------------- project map (local_map)
+
+SKIP_DIRS = {".git", "node_modules", "__pycache__", ".venv", "venv", "env", "dist", "build", ".next",
+             ".cache", ".idea", ".vscode", "target", "coverage", ".pytest_cache", ".mypy_cache", "runs"}
+BINARY_EXT = {".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".ico", ".pdf", ".zip", ".gz", ".7z",
+              ".exe", ".dll", ".so", ".pyd", ".bin", ".pt", ".pth", ".gguf", ".safetensors", ".onnx",
+              ".mp3", ".mp4", ".wav", ".ogg", ".woff", ".woff2", ".ttf", ".otf", ".db", ".sqlite", ".pyc",
+              ".lock", ".npy", ".npz", ".pkl"}
+_NAME = re.compile(r"\b(?:def|class|function\*?|func|fn|struct|interface|type|enum|trait|impl|mod|module|"
+                   r"const|let|var|record)\s+([A-Za-z_][\w]*)")
+
+
+def _list_files(root):
+    """Tracked files if root is a git repo (respects .gitignore), else a walk that skips junk dirs."""
+    import subprocess
+    if os.path.isdir(os.path.join(root, ".git")):
+        try:
+            r = subprocess.run(["git", "-C", root, "ls-files", "-co", "--exclude-standard"],
+                               capture_output=True, text=True, timeout=20)
+            if r.returncode == 0:
+                return [f for f in r.stdout.splitlines() if f.strip()], "git ls-files"
+        except (OSError, subprocess.TimeoutExpired):
+            pass
+    out = []
+    for d, dirs, files in os.walk(root):
+        dirs[:] = sorted(x for x in dirs if x not in SKIP_DIRS and not x.startswith("."))
+        out += [os.path.relpath(os.path.join(d, f), root).replace("\\", "/") for f in sorted(files)]
+    return out, "directory walk"
+
+
+def _symbols(text, kind):
+    """Names of top-level definitions only (indent 0), so a map stays one line per file."""
+    names = []
+    for _, line in code_outline(text.split("\n"), kind):
+        if line[:1].isspace() or (kind == "md" and line.startswith("###")):
+            continue
+        m = _NAME.search(line)
+        names.append(m.group(1) if m else line.strip().lstrip("#").strip()[:40])
+    return names
+
+
+def map_dir(root, max_chars=12000, max_files=3000):
+    root = os.path.abspath(os.path.expanduser(root))
+    files, source = _list_files(root)
+    entries, total_lines = [], 0
+    for rel in files[:max_files]:
+        p = os.path.join(root, rel)
+        ext = os.path.splitext(rel)[1].lower()
+        try:
+            size = os.path.getsize(p)
+        except OSError:
+            continue
+        if ext in BINARY_EXT or size > 2_000_000:
+            entries.append((rel, None, size, []))
+            continue
+        try:
+            with open(p, "r", encoding="utf-8", errors="replace") as f:
+                text = f.read()
+        except OSError:
+            continue
+        n = text.count("\n") + 1
+        total_lines += n
+        kind = kind_of(rel, text)
+        entries.append((rel, n, size, _symbols(text, kind) if kind not in ("log", "yaml", "toml") else []))
+
+    head = (f"map: {root} | {len(entries)} files | {total_lines:,} text lines | source: {source}"
+            + (f" | first {max_files} files only" if len(files) > max_files else ""))
+
+    def render(sym_cap, file_cap):
+        by_dir = {}
+        for e in entries:
+            by_dir.setdefault(os.path.dirname(e[0]) or ".", []).append(e)
+        out = [head]
+        for d in sorted(by_dir):
+            es = by_dir[d]
+            lines = sum(e[1] or 0 for e in es)
+            out.append(f"{d}/  ({len(es)} files, {lines:,} lines)")
+            shown = sorted(es, key=lambda e: -(e[1] or 0))[:file_cap] if file_cap else es
+            for rel, n, size, syms in sorted(shown):
+                size_s = f"{n:,}L" if n is not None else f"{size // 1024}KB binary"
+                sym_s = ""
+                if syms and sym_cap:
+                    sym_s = "  " + ", ".join(syms[:sym_cap]) + (f" +{len(syms) - sym_cap}" if len(syms) > sym_cap else "")
+                out.append(f"  {os.path.basename(rel)}  {size_s}{sym_s}")
+            if file_cap and len(es) > file_cap:
+                out.append(f"  ... {len(es) - file_cap} smaller files")
+        return "\n".join(out)
+
+    # Degrade detail until it fits: fewer symbols, then only the biggest files per directory.
+    for sym_cap, file_cap in ((10, 0), (5, 0), (3, 0), (0, 0), (0, 15), (0, 5)):
+        text = render(sym_cap, file_cap)
+        if len(text) <= max_chars:
+            return text
+    return text[:max_chars] + "\n... (map truncated; pass a subdirectory as root for detail)"

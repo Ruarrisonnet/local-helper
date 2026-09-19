@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.2.0
+
+**Hook: paging limit**
+- v1.1 left a loophole: reading a big file 300 lines at a time costs as many tokens as reading it whole.
+  The hook now tracks the distinct lines read of each large file per session, with a limit of
+  max(600, a quarter of the file). Re-reading a range is always free, so re-checking code after an Edit costs
+  nothing. Each session has its own limit, and old records are cleaned up after 2 days.
+
+**local_run follows your permission rules**
+- v1.1's documented risk: `local_run` ran commands outside Claude Code's Bash rules. It now reads
+  `permissions.deny` and `permissions.ask` from `~/.claude/settings(.local).json` and the project's
+  `.claude/settings(.local).json`. Matching commands are refused, including a match after `&&`, `;` or `|`.
+  For an `ask` command, it points Claude to the Bash tool so you get asked. Both the `Bash(...)` and
+  `PowerShell(...)` rule forms are supported, including the legacy `:*` prefix syntax.
+
+**New tool: `local_map`**
+- An instant map of a whole project, no model: files grouped by directory with line counts and top-level
+  definitions. Uses `git ls-files` in repos (so .gitignore applies), skips node_modules/venv/build, and flags
+  binaries. Detail is reduced step by step to fit the output limit. Measured: 27-file repo in 331ms, 2.7KB.
+
+**Progress updates**
+- Summarize and extract send MCP `notifications/progress` after each section when the client asks, so
+  a 30-90s call shows "section 2/3" instead of looking stuck.
+
+**Tests**
+- 32 server checks (+10) and 24 hook checks (+7, covering the paging limit).
+
 ## 1.1.0
 
 **Better help for Claude**

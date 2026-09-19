@@ -60,6 +60,32 @@ for want, payload, name in cases:
     fails += got != want
     print(f"{'PASS' if got == want else 'FAIL'} want {want:5} got {got:5} {name}")
 
+# v1.2: paging budget. BIG is 770 lines -> budget max(600, 770//4) = 600 distinct lines per session.
+S1, S2 = f"test-{os.getpid()}-a", f"test-{os.getpid()}-b"
+paging = [
+    ("ALLOW", S1, 1, 300, "page 1-300 (300 used)"),
+    ("ALLOW", S1, 1, 300, "re-read 1-300 is free (still 300)"),
+    ("ALLOW", S1, 301, 300, "page 301-600 (600 = budget, allowed)"),
+    ("DENY", S1, 601, 100, "page 601-700 (700 > 600) denied"),
+    ("ALLOW", S1, 100, 50, "re-read 100-149 after the deny is still free"),
+    ("ALLOW", S2, 601, 100, "another session has its own budget"),
+]
+for want, sess, off, lim, name in paging:
+    payload = {**read(BIG, offset=off, limit=lim), "session_id": sess}
+    got, out = run(payload)
+    fails += got != want
+    print(f"{'PASS' if got == want else 'FAIL'} want {want:5} got {got:5} {name}")
+_, out = run({**read(BIG, offset=601, limit=100), "session_id": S1})
+ok = "paging budget" in out and "Re-reading ranges" in out
+fails += not ok
+print(f"{'PASS' if ok else 'FAIL'} paging deny explains the budget and the free re-read")
+for s in (S1, S2):
+    try:
+        os.remove(os.path.join(HERE, "state", f"reads-{s}.json"))
+    except OSError:
+        pass
+cases += paging + [None]   # for the pass count
+
 # v1.1: the deny message carries an exact outline of the file
 _, out = run(read(BIG))
 reason = json.loads(out)["hookSpecificOutput"]["permissionDecisionReason"] if out else ""
