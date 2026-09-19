@@ -15,6 +15,9 @@ import shlex
 import socket
 import sys
 
+sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+import outline  # noqa: E402
+
 MAX_LINES = 500
 MAX_BYTES = 40_000
 WINDOW = 300
@@ -73,14 +76,23 @@ def measure(path):
     return p, lines, size
 
 
+OUTLINE_ITEMS = 50
+OUTLINE_MAX_CHARS = 5000
+
+
 def advice(p, lines, size):
-    return (f"local-helper enforcement: {p} is {lines:,} lines / {size // 1024}KB, too large to read whole. "
-            "Instead use one of: "
-            f"(1) mcp__local-helper__local_summarize(path=..., question=...) or local_extract(path=..., what=...), "
-            "then Read only the cited lines; "
-            f"(2) Read with offset and limit <= {WINDOW} for the exact range you need (this is also enough to Edit the file); "
-            "(3) Grep for a precise pattern. "
-            "If the local-helper tools are not available in this session, use (2) or (3).")
+    msg = (f"local-helper enforcement: {p} is {lines:,} lines / {size // 1024}KB, too large to read whole. "
+           f"Use the outline below to pick a range, then Read with offset and limit <= {WINDOW} (also enough to "
+           "Edit the file). For a question that needs the whole file, use mcp__local-helper__local_summarize "
+           "(path, question) or local_extract (path, what). For exact matches, use Grep.")
+    try:
+        o = outline.outline_file(p, OUTLINE_ITEMS)
+        if len(o) > OUTLINE_MAX_CHARS:
+            o = o[:OUTLINE_MAX_CHARS] + "\n... (outline truncated; mcp__local-helper__local_outline gives the full one)"
+        msg += "\n\n" + o
+    except Exception:
+        pass  # the outline is a bonus; the deny must still happen
+    return msg
 
 
 def check_read(ti):

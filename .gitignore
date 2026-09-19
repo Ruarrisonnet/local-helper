@@ -2,3 +2,5 @@ __pycache__/
 *.pyc
 usage.jsonl
 ENFORCE_OFF
+cache.db
+runs/
