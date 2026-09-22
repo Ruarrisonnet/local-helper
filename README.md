@@ -72,10 +72,11 @@ L119: def model_generate(model, system, prompt, max_tokens=600):
 | `local_extract` | yes | Lines matching a description Grep can't express. The model reads the file, then a second pass checks lines shaped like its matches one by one: 91-93% recall measured, so use Grep when you need every match. |
 | `local_classify` | yes | Sorting short items (file names, log lines) into your labels. |
 | `local_draft` | yes | Boilerplate first drafts (docstrings, commit messages) that you then rewrite. |
-| `local_stats` | no | Calls, cache hits, estimated tokens saved. |
+| `local_stats` | no | Calls, cache hits, and a crude chars/4 estimate of tokens saved. It counts what the raw text would have cost and ignores what the call itself cost, so it flatters the tool - the benchmark below is the number to trust. |
 
-The first four need no model and answer in milliseconds; those are the ones worth having. The four
-that call a model are slow on a small GPU and, in the benchmark, never paid for themselves - see
+`local_map`, `local_outline` and `local_run` need no model and answer in milliseconds; those are the
+ones worth having. The four that call a model are slow on a small GPU and, in the benchmark, never
+paid for themselves - see
 [Measured](#measured) before you build a workflow around them.
 
 Summaries and extracts are cached by file **content**. Ask the same question about an unchanged file and

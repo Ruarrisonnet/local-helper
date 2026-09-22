@@ -6,6 +6,7 @@ file's size and mtime, so only changed files are re-embedded. A query is embedde
 unit by cosine similarity, plus a small bonus for exact identifier matches (embeddings are weak at those).
 """
 import array
+import contextlib
 import math
 import os
 import re
@@ -55,14 +56,22 @@ def units_of(rel, text):
     return out
 
 
+@contextlib.contextmanager
 def _db(path):
+    """`with sqlite3.connect(...)` commits but does NOT close, which leaks the handle: on Windows
+    that keeps the index file locked (CI could not delete it) and a long-running server accumulates
+    connections. This commits like the bare connection did, and closes."""
     db = sqlite3.connect(path, timeout=10)
-    db.execute("CREATE TABLE IF NOT EXISTS files (path TEXT, model TEXT, mtime REAL, size INTEGER, "
-               "PRIMARY KEY (path, model))")
-    db.execute("CREATE TABLE IF NOT EXISTS units (path TEXT, model TEXT, start INTEGER, end INTEGER, "
-               "head TEXT, vec BLOB)")
-    db.execute("CREATE INDEX IF NOT EXISTS units_path ON units (path, model)")
-    return db
+    try:
+        db.execute("CREATE TABLE IF NOT EXISTS files (path TEXT, model TEXT, mtime REAL, size INTEGER, "
+                   "PRIMARY KEY (path, model))")
+        db.execute("CREATE TABLE IF NOT EXISTS units (path TEXT, model TEXT, start INTEGER, end INTEGER, "
+                   "head TEXT, vec BLOB)")
+        db.execute("CREATE INDEX IF NOT EXISTS units_path ON units (path, model)")
+        with db:                       # same commit-on-success / rollback-on-error as before
+            yield db
+    finally:
+        db.close()
 
 
 def _pack(v):

@@ -5,6 +5,7 @@ Each check is written so that reverting the fix it names makes it fail.
     python test_units.py
 """
 import json
+import contextlib
 import os
 import shutil
 import subprocess
@@ -214,8 +215,27 @@ db = os.path.join(WORK, "idx.db")
 search.EMBED_BATCH, search.MAX_UNITS = 4, 10        # tiny caps so the cap path is exercised
 st = search.refresh(proj, db, "m")
 import sqlite3  # noqa: E402
-rows = sqlite3.connect(db).execute("SELECT path FROM files").fetchall()
-units = sqlite3.connect(db).execute("SELECT path, count(*) FROM units GROUP BY path").fetchall()
+
+
+def _rows(path, sql):
+    """Read and CLOSE. A leaked connection keeps a handle, and Windows then refuses to delete the
+    file: that is exactly how this suite failed on windows-latest / Python 3.13."""
+    with contextlib.closing(sqlite3.connect(path)) as conn:
+        return conn.execute(sql).fetchall()
+
+
+# search._db used to be a bare connection: `with sqlite3.connect(...)` commits but does not close.
+with search._db(os.path.join(WORK, "closed.db")) as _probe:
+    _probe.execute("SELECT 1")
+try:
+    _probe.execute("SELECT 1")
+    _closed = False
+except sqlite3.ProgrammingError:
+    _closed = True
+check("search._db closes the connection when the block ends", _closed)
+os.remove(os.path.join(WORK, "closed.db"))          # only possible if nothing holds the file
+rows = _rows(db, "SELECT path FROM files")
+units = _rows(db, "SELECT path, count(*) FROM units GROUP BY path")
 check(f"index cap: only fully embedded files are recorded ({len(rows)} files, {st['unit_capped']} capped)",
       len(rows) == len(units) and st["unit_capped"] > 0 and all(c > 0 for _, c in units))
 st2 = search.refresh(proj, db, "m")
@@ -226,7 +246,7 @@ db2 = os.path.join(WORK, "idx2.db")
 calls.update(n=0, fail_at=3)
 search.refresh(proj, db2, "m")        # one failure is retried once, so the build finishes
 check("index: one transient embed error is retried, not fatal",
-      sqlite3.connect(db2).execute("SELECT count(*) FROM files").fetchone()[0] == 6)
+      _rows(db2, "SELECT count(*) FROM files")[0][0] == 6)
 os.remove(db2)
 calls.update(n=0, fail_at=3, fail_until=4)
 _orig_embed = fake_embed
@@ -245,13 +265,13 @@ try:
     crashed = False
 except search.backend.BackendError:
     crashed = True
-kept = sqlite3.connect(db2).execute("SELECT count(*) FROM files").fetchone()[0]
+kept = _rows(db2, "SELECT count(*) FROM files")[0][0]
 check(f"index: an embed error that persists keeps the files already done ({kept} kept)", crashed and kept > 0)
 search.backend.embed = fake_embed
 calls.update(fail_at=None, fail_until=0)
 st3 = search.refresh(proj, db2, "m")
 check("index: the run after a failure finishes the rest", st3["embedded_files"] > 0 and
-      sqlite3.connect(db2).execute("SELECT count(*) FROM files").fetchone()[0] == 6)
+      _rows(db2, "SELECT count(*) FROM files")[0][0] == 6)
 st4 = search.refresh(proj, db2, "m")
 check("index: paths are stored one way only (no re-embed from separator spelling)", st4["embedded_files"] == 0)
 hits = search.query(os.path.join(proj, "sub"), db2, "m", "fn", top_k=3)

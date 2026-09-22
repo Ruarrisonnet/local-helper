@@ -4,6 +4,7 @@ Dependency-free (stdlib only) stdio JSON-RPC, so it runs on the system Python wi
 The local model is a helper, never the decision-maker: its prose is fenced and labelled untrusted,
 and only line quotes the server has checked against the source are presented as evidence.
 """
+import contextlib
 import ctypes
 import hashlib
 import json
@@ -23,7 +24,7 @@ import backend
 import outline
 import search
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 HERE = os.path.dirname(os.path.abspath(__file__))
 LAUNCH_CWD = os.getcwd()            # Claude Code starts MCP servers in the project directory
 DATA_DIR = os.environ.get("LOCAL_HELPER_DATA") or HERE
@@ -548,10 +549,17 @@ def _finish(tool, model, text, n_chunks, t0, body):
 # renamed/copied one still hits. The model names are part of the key, so changing LOCAL_HELPER_BIG
 # doesn't serve another model's answers. A small-model answer is recomputed once the big one is usable.
 
+@contextlib.contextmanager
 def _cache_db():
+    """`with sqlite3.connect(...)` commits but never closes, so the handle leaks: the server holds a
+    growing set of connections and, on Windows, the cache file cannot be deleted."""
     db = sqlite3.connect(CACHE_DB, timeout=5)
-    db.execute("CREATE TABLE IF NOT EXISTS answers (key TEXT PRIMARY KEY, body TEXT, model TEXT, t REAL)")
-    return db
+    try:
+        db.execute("CREATE TABLE IF NOT EXISTS answers (key TEXT PRIMARY KEY, body TEXT, model TEXT, t REAL)")
+        with db:                       # same commit-on-success / rollback-on-error as before
+            yield db
+    finally:
+        db.close()
 
 
 def _cache_key(tool, text, args):

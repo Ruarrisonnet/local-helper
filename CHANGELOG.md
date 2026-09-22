@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.4.1
+
+- **SQLite connections leaked.** `with sqlite3.connect(...) as db` commits the transaction but does not
+  close the connection, so both the answer cache and the search index left a handle open on every call.
+  A long-running server accumulated them, and on Windows the files could not be deleted - which is how
+  this surfaced: v1.4's CI failed on windows-latest / Python 3.13 with `PermissionError: [WinError 32]`
+  while the other four platforms passed. Both are now context managers that close what they open, with a
+  check that the connection is really closed after the block.
+
 ## 1.4.0
 
 **Model backends:** Ollama, or any OpenAI-compatible server (LM Studio, llama.cpp's `llama-server`, vLLM, Jan)
