@@ -156,8 +156,11 @@ def check(name, ok, model=False):
 
 # protocol --------------------------------------------------------------------------------------------
 init = res[1]["result"]
-check("initialize: version 1.4.0, protocol negotiated, instructions present",
-      init["serverInfo"]["version"] == "1.4.0" and init["protocolVersion"] == "2025-06-18" and "MODEL TEXT" in init["instructions"])
+# Compared against server.VERSION, not a literal: a hard-coded "1.4.0" here failed the whole suite
+# on all five platforms the moment the version was bumped, which says nothing about the server.
+check(f"initialize: version {server.VERSION}, protocol negotiated, instructions present",
+      init["serverInfo"]["version"] == server.VERSION and init["protocolVersion"] == "2025-06-18"
+      and "MODEL TEXT" in init["instructions"])
 check("parse error answered and the server survived", None in res and 7 in res)
 check("JSON-RPC batch answered as an array", isinstance(batch, list) and sorted(r["id"] for r in batch) == ["b1", "b2"])
 tools = {t["name"]: t for t in res[2]["result"]["tools"]}

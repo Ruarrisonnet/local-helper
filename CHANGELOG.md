@@ -1,5 +1,11 @@
 # Changelog
 
+## 1.4.2
+
+- `test_server.py` compared the reported version against a hard-coded `"1.4.0"`, so bumping the version
+  failed the whole suite on all five platforms while saying nothing about the server. It now compares
+  against `server.VERSION`.
+
 ## 1.4.1
 
 - **SQLite connections leaked.** `with sqlite3.connect(...) as db` commits the transaction but does not
