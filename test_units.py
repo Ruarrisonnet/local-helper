@@ -13,7 +13,7 @@ import tempfile
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = tempfile.mkdtemp(prefix="lh_units_")
-for f in ("server.py", "outline.py", "install.py", "enforce.py"):
+for f in ("server.py", "outline.py", "install.py", "enforce.py", "backend.py", "search.py"):
     shutil.copy(os.path.join(HERE, f), WORK)
 RULES = os.path.join(WORK, "rules.json")
 json.dump({"permissions": {
@@ -115,6 +115,7 @@ check("a giant line becomes pieces with one line number", len(gc) > 1 and all(f 
 check("truncation detected from Ollama's own count", server._looks_truncated(server.NUM_CTX // 2 + 2))
 check("normal counts are not truncation", not server._looks_truncated(2000) and not server._looks_truncated(0))
 sent = []
+_real_progress = server.progress          # restored below: later checks must test the real one
 server.progress = lambda done, total, msg: sent.append(done)
 gen = server._sections("\n".join(f"line {i}" for i in range(400)), 300, "t")
 item, forced = next(gen), 0
@@ -162,10 +163,10 @@ check(f"no-newline output: model gets <= MAX_INPUT_CHARS ({seen.get('n')})", 0 <
 trace = {10: "Traceback (most recent call last):", 11: '  File "a.py", line 3, in <module>', 12: "    main()",
          13: '  File "a.py", line 2, in main', 14: "    raise ValueError('x')"}
 th_hits = {(n, t.strip()): t.strip() for n, t in trace.items()}
-check("stack-trace run kept (not a code definition)", server._drop_copied_bodies(th_hits, dict(trace)) == 0 and len(th_hits) == 5)
+check("stack-trace run kept (not a code definition)", server._drop_copied_bodies(th_hits, dict(trace))[0] == 0 and len(th_hits) == 5)
 body = {20: "def f(x):", 21: "    y = x + 1", 22: "    z = y * 2", 23: "    return z"}
 b_hits = {(n, t.strip()): t.strip() for n, t in body.items()}
-check("copied function body dropped after a def line", server._drop_copied_bodies(b_hits, dict(body)) == 3 and len(b_hits) == 1)
+check("copied function body dropped after a def line", server._drop_copied_bodies(b_hits, dict(body))[0] == 3 and len(b_hits) == 1)
 
 # ---- output decoding (review #14) -------------------------------------------------------------------------
 check("one bad byte does not switch the whole output to the locale codec", server._decode("héllo wörld ".encode() * 50 + b"\xff", False).startswith("héllo"))
@@ -190,6 +191,88 @@ check("_cap(items, 0) returns nothing", outline._cap(list(range(10)), 0) == ([],
 md2 = "```\ncode\n~~~\n# still code\n```\n# After"
 check("markdown: a ~~~ line doesn't close a ``` block, later headings still found",
       [s for _, s in outline.code_outline(md2.split("\n"), "md")] == ["# After"])
+
+# ---- search index (v1.4 review #0, #1, #3) ----------------------------------------------------------
+import search  # noqa: E402
+
+proj = os.path.join(WORK, "searchproj")
+os.makedirs(os.path.join(proj, "sub"))
+for i in range(6):
+    open(os.path.join(proj, "sub", f"f{i}.py"), "w").write("\n\n".join(f"def fn_{i}_{j}():\n    return {j}" for j in range(4)))
+calls = {"n": 0, "fail_at": None}
+
+
+def fake_embed(model, texts):
+    calls["n"] += 1
+    if calls["n"] == calls["fail_at"]:
+        raise search.backend.BackendError("transient")
+    return [[float(len(t) % 7), 1.0, 0.5] for t in texts]
+
+
+search.backend.embed = fake_embed
+db = os.path.join(WORK, "idx.db")
+search.EMBED_BATCH, search.MAX_UNITS = 4, 10        # tiny caps so the cap path is exercised
+st = search.refresh(proj, db, "m")
+import sqlite3  # noqa: E402
+rows = sqlite3.connect(db).execute("SELECT path FROM files").fetchall()
+units = sqlite3.connect(db).execute("SELECT path, count(*) FROM units GROUP BY path").fetchall()
+check(f"index cap: only fully embedded files are recorded ({len(rows)} files, {st['unit_capped']} capped)",
+      len(rows) == len(units) and st["unit_capped"] > 0 and all(c > 0 for _, c in units))
+st2 = search.refresh(proj, db, "m")
+check("index: a second run re-embeds nothing", st2["embedded_files"] == 0 and st2["units_embedded"] == 0)
+check("index: capped files are reported every run, not silently forgotten", st2["unit_capped"] == st["unit_capped"])
+search.MAX_UNITS = 10000
+db2 = os.path.join(WORK, "idx2.db")
+calls.update(n=0, fail_at=3)
+search.refresh(proj, db2, "m")        # one failure is retried once, so the build finishes
+check("index: one transient embed error is retried, not fatal",
+      sqlite3.connect(db2).execute("SELECT count(*) FROM files").fetchone()[0] == 6)
+os.remove(db2)
+calls.update(n=0, fail_at=3, fail_until=4)
+_orig_embed = fake_embed
+
+
+def failing_embed(model, texts):
+    calls["n"] += 1
+    if calls["fail_at"] <= calls["n"] <= calls.get("fail_until", 0):
+        raise search.backend.BackendError("transient")
+    return [[float(len(x) % 7), 1.0, 0.5] for x in texts]
+
+
+search.backend.embed = failing_embed
+try:
+    search.refresh(proj, db2, "m")
+    crashed = False
+except search.backend.BackendError:
+    crashed = True
+kept = sqlite3.connect(db2).execute("SELECT count(*) FROM files").fetchone()[0]
+check(f"index: an embed error that persists keeps the files already done ({kept} kept)", crashed and kept > 0)
+search.backend.embed = fake_embed
+calls.update(fail_at=None, fail_until=0)
+st3 = search.refresh(proj, db2, "m")
+check("index: the run after a failure finishes the rest", st3["embedded_files"] > 0 and
+      sqlite3.connect(db2).execute("SELECT count(*) FROM files").fetchone()[0] == 6)
+st4 = search.refresh(proj, db2, "m")
+check("index: paths are stored one way only (no re-embed from separator spelling)", st4["embedded_files"] == 0)
+hits = search.query(os.path.join(proj, "sub"), db2, "m", "fn", top_k=3)
+check("query: a subdirectory root finds its own files", hits and all(os.path.join(proj, "sub") in h[1] for h in hits))
+
+# ---- progress stays monotonic across a tool's two phases (v1.4 review #4) ---------------------------
+sent2 = []
+server.progress = _real_progress          # undo the stub above, or this check tests nothing
+server.send = lambda msg: sent2.append(msg["params"]["progress"])
+server._PROGRESS.update(token="t", last=0)
+for i in (1, 2, 3):
+    server.progress(i, 3, "phase one")
+for i in (1, 2):
+    server.progress(i, 2, "phase two")
+server._PROGRESS.update(token=None, last=0)
+check(f"progress never goes backwards across phases {sent2}", all(b > a for a, b in zip(sent2, sent2[1:])))
+
+# ---- secrets names added in v1.4 (review #7) --------------------------------------------------------
+for name in ("secrets.yaml", "secrets.yml", "secret.json", "app_secrets.env", "prod-secrets.json"):
+    check(f"secrets: {name} refused", blocked(os.path.join(t, name)))
+check("secrets: secrets.example.yaml allowed", not blocked(os.path.join(t, "secrets.example")))
 
 # ---- installer (review #18, #19, #25) ---------------------------------------------------------------------
 h = install.hook_command()

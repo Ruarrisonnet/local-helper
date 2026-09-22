@@ -16,10 +16,10 @@ import shlex
 import socket
 import sys
 import time
-import urllib.parse
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
+import backend  # noqa: E402
 import outline  # noqa: E402
 
 MAX_LINES = 500
@@ -29,16 +29,26 @@ KILL_SWITCH = os.path.join(HERE, "ENFORCE_OFF")
 CONFIG = os.path.join(HERE, "config.json")     # optional, user-local: {"exempt_dirs": ["~/somewhere"]}
 HOME = os.path.expanduser("~")
 CASE_INSENSITIVE_FS = os.name == "nt" or sys.platform == "darwin"
-# Instructions Claude must read whole (skills, plugins, agents, commands) are never policed.
-DEFAULT_EXEMPT = [os.path.join(HOME, ".claude", d) for d in ("plugins", "skills", "commands", "agents")]
+# Instructions Claude must read whole (skills, plugins, agents, commands) are never policed, and
+# neither is Claude Code's own session storage: "projects" holds the spill files it writes when a
+# tool result is too big to inline (blocking those stops Claude reading its OWN grep output), its
+# transcripts, and the memory directory.
+DEFAULT_EXEMPT = [os.path.join(HOME, ".claude", d)
+                  for d in ("plugins", "skills", "commands", "agents", "projects")]
 EXEMPT_NAMES = {"claude.md", "claude.local.md", "memory.md", "settings.json", "settings.local.json"}
 BINARY_EXT = set(outline.BINARY_EXT) | {".ipynb"}     # one list shared with local_map
 OUTLINE_MAX_FILE = 20 * 1024 * 1024    # above this, no outline: the deny must arrive well inside the hook timeout
 DUMP_CMDS = {"cat", "type", "get-content", "gc", "more", "less", "bat"}
 # Anything that narrows the output makes the command a windowed read, which is fine.
-NARROWING = re.compile(r"\|\s*(head|tail|grep|rg|findstr|wc|select-object|select-string|sls|sort|uniq|awk|sed)\b"
+# PowerShell's Where-Object/ForEach-Object/Measure-Object are the grep/awk/wc of that shell, and the
+# Bash equivalents were already here. Without them the hook refused pipelines that plainly filter
+# ("Get-Content app.log | Where-Object { $_ -match ' ERROR ' }"), which cost a benchmark run six
+# extra turns working around it.
+NARROWING = re.compile(r"\|\s*(head|tail|grep|rg|findstr|wc|select-object|select-string|sls|sort|uniq|awk|sed"
+                       r"|where-object|where|foreach-object|measure-object|group-object|compare-object)\b"
+                       r"|\|\s*[?%]\s*[{(]"      # the ? and % aliases: `| ? { ... }`, `| % { ... }`
                        r"|-TotalCount\b|-Tail\b|-Head\b|-First\b|-Last\b|\bsed\s+-n\b", re.I)
-STATE_DIR = os.path.join(HERE, "state")
+STATE_DIR = os.path.join(os.environ.get("LOCAL_HELPER_DATA") or HERE, "state")
 STATE_MAX_AGE = 2 * 86400
 OUTLINE_ITEMS = 50
 OUTLINE_MAX_CHARS = 5000
@@ -65,14 +75,13 @@ def _config():
 
 
 def ollama_up():
-    if os.environ.get("LOCAL_HELPER_ASSUME_OLLAMA_UP") == "1":      # tests / CI without Ollama
+    """Is the model backend (Ollama or an OpenAI-compatible server) listening? If not, the tools can't
+    help, so the hook allows everything. backend.base_url() reads the environment, then config.json
+    (install.py records the address there: the hook never sees `claude mcp add -e` variables)."""
+    if os.environ.get("LOCAL_HELPER_ASSUME_OLLAMA_UP") == "1":      # tests / CI without a backend
         return True
-    # The hook doesn't see variables given to `claude mcp add -e`, so install.py records a non-default
-    # Ollama address in config.json; the environment still wins when it is set.
-    url = os.environ.get("LOCAL_HELPER_OLLAMA") or _config().get("ollama") or "http://127.0.0.1:11434"
-    u = urllib.parse.urlparse(str(url))
     try:
-        with socket.create_connection((u.hostname or "127.0.0.1", u.port or 11434), timeout=0.3):
+        with socket.create_connection(backend.host_port(), timeout=0.3):
             return True
     except OSError:
         return False

@@ -15,7 +15,7 @@ from concurrent.futures import ThreadPoolExecutor
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = tempfile.mkdtemp(prefix="lh_enforce_")
-for f in ("enforce.py", "outline.py"):
+for f in ("enforce.py", "outline.py", "backend.py"):
     shutil.copy(os.path.join(HERE, f), WORK)
 HOOK = os.path.join(WORK, "enforce.py")
 ENV = dict(os.environ, LOCAL_HELPER_ASSUME_OLLAMA_UP="1")
@@ -78,6 +78,18 @@ expect("ALLOW", read(SMALL), "Read small file")
 expect("ALLOW", read(os.path.join(files, "missing.txt")), "Read missing file")
 expect("ALLOW", read(PHOTO), "Read IMG_0001.JPG (uppercase binary extension)")
 expect("ALLOW", read(CFG_BIG), "Read big file in a config.json exempt_dirs folder")
+# Claude Code spills an oversized tool result to ~/.claude/projects/<slug>/<id>/tool-results/*.txt
+# and then reads it back. Blocking that stops Claude reading its own grep output (seen for real in
+# a benchmark run), so everything under ~/.claude/projects is exempt.
+SPILL = os.path.join(WORK, ".claude", "projects", "slug", "sess", "tool-results")
+os.makedirs(SPILL)
+SPILL_BIG = os.path.join(SPILL, "toolu_01abc.txt")
+shutil.copy(BIG, SPILL_BIG)
+expect("ALLOW", read(SPILL_BIG), "Read a big Claude Code tool-result spill file",
+       env=dict(ENV, HOME=WORK, USERPROFILE=WORK))
+expect("ALLOW", read(os.path.join(WORK, ".claude", "projects", "slug", "sess", "tool-results", "toolu_01abc.txt"),
+                    limit=2000), "Read spill file with a big limit",
+       env=dict(ENV, HOME=WORK, USERPROFILE=WORK))
 expect("DENY", read(UNI_BIG), "Read big file under a non-ASCII path, sent as raw UTF-8")
 expect("DENY", sh("Bash", f"cat {fwd}"), "bash cat big")
 expect("DENY", sh("Bash", f"cd /tmp && cat '{BIG_BS}'"), "bash cat big, backslash path after &&")
@@ -113,6 +125,14 @@ results.append((_t.time() - _t0 < 8 and "no outline" in huge_out, f"...quickly a
 expect("ALLOW", sh("Bash", "ls -la && git status"), "bash unrelated")
 expect("DENY", sh("PowerShell", f"Get-Content {fwd}"), "PS Get-Content big")
 expect("ALLOW", sh("PowerShell", f"Get-Content {fwd} -TotalCount 40"), "PS Get-Content -TotalCount")
+# The PowerShell equivalents of grep/awk/wc filter just as much as the Bash ones, which were already
+# allowed. A real benchmark run lost six turns to the first of these being refused.
+expect("ALLOW", sh("PowerShell", f"$e = Get-Content {fwd} | Where-Object {{ $_ -match ' ERROR ' }}"),
+       "PS Get-Content | Where-Object, assigned to a variable")
+expect("ALLOW", sh("PowerShell", f"Get-Content {fwd} | ? {{ $_ -match 'x' }}"), "PS Get-Content | ? {} alias")
+expect("ALLOW", sh("PowerShell", f"Get-Content {fwd} | Measure-Object -Line"), "PS Get-Content | Measure-Object")
+expect("ALLOW", sh("PowerShell", f"Get-Content {fwd} | % {{ $_.Trim() }} | Group-Object"), "PS Get-Content | % {} | Group-Object")
+expect("DENY", sh("PowerShell", f"Get-Content {fwd} | Out-String"), "PS Get-Content | Out-String still dumps")
 expect("ALLOW", sh("PowerShell", f"type {SMALL}"), "PS type small")
 expect("ALLOW", "not json", "garbage stdin")
 expect("ALLOW", json.dumps([1, 2]), "valid JSON that is not an object")

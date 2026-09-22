@@ -15,11 +15,10 @@ import subprocess
 import sys
 import tempfile
 import time
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 WORK = tempfile.mkdtemp(prefix="lh_test_")
-for f in ("server.py", "outline.py"):
+for f in ("server.py", "outline.py", "backend.py", "search.py"):
     shutil.copy(os.path.join(HERE, f), WORK)
 sys.path.insert(0, WORK)
 import server  # noqa: E402  (the copy: used for ground truth like chunk counts, bash discovery)
@@ -30,17 +29,9 @@ src = src_text.split("\n")
 truth_fns = re.findall(r"^def (\w+)", src_text, re.M)
 
 
-def ollama_models():
-    try:
-        with urllib.request.urlopen(server.OLLAMA + "/api/tags", timeout=3) as r:
-            return {m["name"] for m in json.load(r).get("models", [])}
-    except Exception:
-        return None
-
-
-have = ollama_models()
-MODEL_OK = bool(have) and (server.BIG_MODEL in have or server.SMALL_MODEL in have)
-print(f"Ollama: {'up, models ' + ', '.join(sorted(have & {server.BIG_MODEL, server.SMALL_MODEL})) if MODEL_OK else 'not usable -- model checks will be SKIPPED'}")
+have = server.backend.list_models()
+MODEL_OK = any(server.backend.has_model(have, m) for m in (server.BIG_MODEL, server.SMALL_MODEL))
+print(f"{server.backend.kind()} backend: {'up, models ' + ', '.join(sorted(m for m in (server.BIG_MODEL, server.SMALL_MODEL) if server.backend.has_model(have, m))) if MODEL_OK else 'not usable -- real-model checks will be SKIPPED (test_models.py covers the model code with a mock)'}")
 
 # Fixtures ------------------------------------------------------------------------------------------
 PY = sys.executable
@@ -165,12 +156,12 @@ def check(name, ok, model=False):
 
 # protocol --------------------------------------------------------------------------------------------
 init = res[1]["result"]
-check("initialize: version 1.3.0, protocol negotiated, instructions present",
-      init["serverInfo"]["version"] == "1.3.0" and init["protocolVersion"] == "2025-06-18" and "MODEL TEXT" in init["instructions"])
+check("initialize: version 1.4.0, protocol negotiated, instructions present",
+      init["serverInfo"]["version"] == "1.4.0" and init["protocolVersion"] == "2025-06-18" and "MODEL TEXT" in init["instructions"])
 check("parse error answered and the server survived", None in res and 7 in res)
 check("JSON-RPC batch answered as an array", isinstance(batch, list) and sorted(r["id"] for r in batch) == ["b1", "b2"])
 tools = {t["name"]: t for t in res[2]["result"]["tools"]}
-check(f"8 tools listed ({len(tools)})", len(tools) == 8)
+check(f"9 tools listed ({len(tools)})", len(tools) == 9)
 check("annotations: outline read-only, run destructive",
       tools["local_outline"]["annotations"]["readOnlyHint"] is True and tools["local_run"]["annotations"]["destructiveHint"] is True)
 check("missing required argument -> JSON-RPC -32602", res[20].get("error", {}).get("code") == -32602)

@@ -1,9 +1,13 @@
-__pycache__/
 *.pyc
-usage.jsonl
 ENFORCE_OFF
+HOOK_DEBUG
+__pycache__/
+bench_runs/
+bench_validate.*
+
 cache.db
+config.json
+index.db
 runs/
 state/
-config.json
-HOOK_DEBUG
+usage.jsonl

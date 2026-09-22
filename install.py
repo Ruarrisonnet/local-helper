@@ -5,25 +5,29 @@
     python install.py --check      report what is installed, change nothing
     python install.py --uninstall  remove the MCP server and the hook
 
-Never downloads anything: if Ollama or a model is missing it prints the command to get it.
+Never downloads anything: if the backend or a model is missing it prints the command to get it.
 Edits ~/.claude/settings.json only to add or remove its own hook entry, after writing a backup.
+Works with Ollama (default) or an OpenAI-compatible server: set LOCAL_HELPER_BACKEND=openai and
+LOCAL_HELPER_URL before running it, and both are recorded for the hook.
 """
 import json
 import os
 import shutil
 import subprocess
 import sys
-import urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+import backend  # noqa: E402
+
 SERVER = os.path.join(HERE, "server.py")
 HOOK = os.path.join(HERE, "enforce.py")
 NAME = "local-helper"
 SETTINGS = os.path.join(os.path.expanduser("~"), ".claude", "settings.json")
 MATCHER = "Read|Bash|PowerShell"
-OLLAMA = os.environ.get("LOCAL_HELPER_OLLAMA", "http://127.0.0.1:11434")
 MODELS = [os.environ.get("LOCAL_HELPER_BIG", "qwen2.5-coder:7b-instruct-q3_K_M"),
           os.environ.get("LOCAL_HELPER_SMALL", "qwen2.5:3b")]
+EMBED_MODEL = os.environ.get("LOCAL_HELPER_EMBED", "nomic-embed-text")
 MIN_PY = (3, 8)
 
 
@@ -48,16 +52,22 @@ def check_python():
 
 
 def check_ollama():
-    try:
-        with urllib.request.urlopen(OLLAMA + "/api/tags", timeout=3) as r:
-            have = {m["name"] for m in json.load(r).get("models", [])}
-    except Exception:
-        say(False, f"Ollama not reachable at {OLLAMA}. Install it from https://ollama.com and start it.")
+    """Check the configured backend (the name is historical: it also covers OpenAI-compatible servers)."""
+    kind, url = backend.kind(), backend.base_url()
+    have = backend.list_models()
+    if have is None:
+        how = ("Install it from https://ollama.com and start it" if kind == "ollama"
+               else "Start your OpenAI-compatible server (LM Studio, llama-server, vLLM...)")
+        say(False, f"{kind} backend not reachable at {url}. {how}.")
         return False
-    say(True, f"Ollama reachable at {OLLAMA}")
+    say(True, f"{kind} backend reachable at {url}")
     for m in MODELS:
-        present = m in have or (":" not in m and f"{m}:latest" in have)
-        say(present, f"model {m}" + ("" if present else f" missing -- run: ollama pull {m}"))
+        present = backend.has_model(have, m)
+        fix = f"run: ollama pull {m}" if kind == "ollama" else "load it in the server, or set LOCAL_HELPER_BIG/SMALL"
+        say(present, f"model {m}" + ("" if present else f" missing -- {fix}"))
+    ok = backend.has_model(have, EMBED_MODEL)
+    say(ok or None, f"embedding model {EMBED_MODEL} (optional, for local_find)" + (
+        "" if ok else " missing -- " + (f"run: ollama pull {EMBED_MODEL}" if kind == "ollama" else "load one and set LOCAL_HELPER_EMBED")))
     return True
 
 
@@ -115,9 +125,11 @@ def write_settings(s):
 
 
 def record_ollama_url():
-    """The hook runs outside the MCP server's environment, so a non-default LOCAL_HELPER_OLLAMA would not
-    reach it and it would think Ollama is down (and allow everything). Record it in config.json."""
-    url = os.environ.get("LOCAL_HELPER_OLLAMA")
+    """The hook runs outside the MCP server's environment, so a non-default backend or address would not
+    reach it and it would think the backend is down (and allow everything). Record them in config.json;
+    clear stale ones, which would silently turn the hook off."""
+    want = {"backend": os.environ.get("LOCAL_HELPER_BACKEND"),
+            "url": os.environ.get("LOCAL_HELPER_URL") or os.environ.get("LOCAL_HELPER_OLLAMA")}
     path = os.path.join(HERE, "config.json")
     try:
         with open(path, encoding="utf-8") as f:
@@ -125,19 +137,18 @@ def record_ollama_url():
         cfg = cfg if isinstance(cfg, dict) else {}
     except (OSError, ValueError):
         cfg = {}
-    if url:
-        if cfg.get("ollama") == url:
-            return
-        cfg["ollama"] = url
-        msg = f"recorded Ollama address {url} in config.json for the hook"
-    elif "ollama" in cfg:                  # a stale address would make the hook think Ollama is down
-        del cfg["ollama"]
-        msg = "removed the old Ollama address from config.json (using the default)"
-    else:
+    before = dict(cfg)
+    cfg.pop("ollama", None)                # v1.3's key, superseded by "url"
+    for k, v in want.items():
+        if v:
+            cfg[k] = v
+        else:
+            cfg.pop(k, None)
+    if cfg == before:
         return
     with open(path, "w", encoding="utf-8") as f:
         json.dump(cfg, f, indent=2)
-    say(True, msg)
+    say(True, f"recorded backend {backend.kind()} at {backend.base_url()} in config.json for the hook")
 
 
 def remove_our_hooks(s):

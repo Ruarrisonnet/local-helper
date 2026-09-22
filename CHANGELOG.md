@@ -1,5 +1,87 @@
 # Changelog
 
+## 1.4.0
+
+**Model backends:** Ollama, or any OpenAI-compatible server (LM Studio, llama.cpp's `llama-server`, vLLM, Jan)
+- A new `backend.py` handles both: generation, embeddings, model lists, and context overflow. Ollama truncates
+  an overflowing prompt silently; OpenAI-compatible servers reject it. Either way the section is split and redone.
+  Configure it with `LOCAL_HELPER_BACKEND`, `LOCAL_HELPER_URL` and `LOCAL_HELPER_API_KEY`; `install.py` records
+  them for the hook.
+- A new `mock_backend.py` stands in for a real server, speaking both APIs with a deterministic rule-based
+  "model". `test_models.py` runs every model code path against it, twice (once per API): grounding, fencing,
+  re-splitting, reduce, the extract second pass, `local_find`, fallback and errors. So for the first time
+  CI tests the model code instead of skipping it. Only Ollama has been run with real models.
+
+**`local_extract`: a second pass for recall**
+- A small model reading a chunk misses matches, but answers a yes/no question about one line well. The first
+  pass's verified matches reveal a shape (most start with `def`, or `raise`, or `ERROR`). Every other line with
+  that shape becomes a candidate, and the model confirms them in batches sized to fit its context (at most 40).
+- Measured with the real 7B on five file/query pairs: recall went from **127/178 (71%) to 162-166/178
+  (91-93%, two runs)**.
+  `raise` statements improved most, 5/18 -> 14/18. Precision stayed at 85-100%.
+
+**New tool: `local_find`**, semantic search over a project
+- Code is split per function/class, other files into 40-line windows. Each unit is embedded once
+  (`nomic-embed-text` by default) and cached in SQLite, keyed by file size and mtime, so only changed files
+  are re-embedded. Queries rank by cosine similarity plus a small bonus for exact identifiers.
+- It respects `.gitignore`, your `Read(...)` deny rules and secrets files.
+- On 10 plain-language questions about this repo: right function first 6/10, in the top 5 9/10 (MRR 0.73), against
+  0/10 and 4/10 (MRR 0.18) for keyword ranking. Small and written by the author, so a sanity check, not a benchmark.
+
+**Fixed after review** (two independent reviewers over the v1.4 changes; 18 findings, all reproduced, all fixed)
+- High: indexing a project larger than the 20,000-unit cap marked the files it skipped as indexed anyway, so they
+  stayed empty for ever. On the Python standard library, 71% of files were recorded as indexed with no content, and
+  re-running never repaired it. Now a file is only recorded when all of its units are stored, what's left out is
+  reported, and units already stored count towards the cap.
+- High: the whole index build ran in one transaction, so a single failed embedding call (which happened during the
+  review, on the stdlib) rolled back everything. Each file is now committed as it finishes, and a failed batch is
+  retried once.
+- High: `bench.py` would have run its "with local-helper" side with the hook disabled if an `ENFORCE_OFF` file
+  existed. It now refuses to start unless the hook is live and the backend and models are reachable, and records
+  which local-helper tools each run actually used.
+- The extract confirmation batches are sized by estimated tokens (40 lines of base64 or CJK overflowed the context,
+  and the model answered in prose while the pass reported full coverage); a truncated batch is no longer counted as
+  checked. Progress values stay monotonic across a tool's two phases. Windows path spellings no longer split a
+  file's index identity. `secrets.yaml`-style names are refused like `.env`. The hook's state follows
+  `LOCAL_HELPER_DATA`, so a benchmark run writes nothing into the repo.
+- Four checks in `test_models.py` passed while the feature they named was broken; they now fail when it is.
+  `SECURITY.md` said everything stays local, which stopped being true with the OpenAI-compatible backend.
+
+**Two hook bugs that only running the benchmark exposed.** Both affect ordinary use, and the test suite
+had no case for either.
+- The hook policed `~/.claude/projects`, which is Claude Code's own storage. When a tool result is too big
+  to inline, Claude Code writes it to `.../tool-results/toolu_*.txt` and reads it back - and the hook refused
+  that read, so **Claude could not see the output of its own Grep**, and got an outline of a temp file
+  instead. In a benchmark run it lost its search results this way and answered 54 where the truth was 50.
+  That whole directory (spill files, transcripts, the memory folder) is now exempt.
+- The hook's "is this narrowed?" check knew `grep`, `wc`, `awk` and `sed` but none of their PowerShell
+  equivalents, so it refused `Get-Content app.log | Where-Object { $_ -match ' ERROR ' }` - a pipeline that
+  plainly filters. On Windows that cost a run six extra turns working around the refusal, which was the
+  entire measured slowdown on that task. `Where-Object`, `ForEach-Object`, `Measure-Object`, `Group-Object`,
+  `Compare-Object` and the `?` / `%` aliases now count as narrowing.
+
+**`bench.py`: does it actually save tokens? Mostly no, and now we know why.**
+- Runs real headless Claude Code sessions (Sonnet) on the same tasks with and without local-helper, in fresh
+  copies of a fixture project, isolated from the user's own setup: `--setting-sources project`,
+  `--strict-mcp-config`, the global CLAUDE.md excluded, an explicit environment allowlist, an identical
+  shell permission allowlist in both arms, and a pinned model id. It reads the `stream-json` transcript, so
+  tool calls and per-message usage are observed rather than inferred, and it refuses to start unless
+  `server.py` answers MCP with all 9 tools. 66 valid runs, $5.54.
+- **The result: the hook pays, the local model does not.** On the one task where the baseline would otherwise
+  read a 137KB corpus whole, cost fell **51%** (fresh tokens 131,655 -> 45,496) and the spread narrowed from
+  26k-186k to 34k-88k. Everywhere else local-helper cost **+1% to +27%**. Across 84 sessions Claude called a
+  local-helper tool **3 times**; forced to use them it spent **2-5x the tokens and 28-104x the wall-clock**.
+  The README now leads with that instead of with "keep bulk text out of Claude's context".
+- Two reasons the premise underdelivers, both measured: Claude filters with Grep and the shell rather than
+  reading bulk text, so a digest has little to replace; and `local_extract` reproduces every matching line
+  (38,762 characters on the log task - larger than the baseline's whole session) instead of pointing at them.
+- The first version of this benchmark was wrong in three ways, all found by auditing it before publishing:
+  it summed `cache_read` across turns (measuring turn count, not text), scraped tool usage from an output
+  format that cannot contain it, and copied a README into the fixture that held the answer to one task.
+  The fixture generators now compute ground truth as they write, and `bench_fixture.py` asserts that the
+  best single word anyone could grep for scores F1 < 0.6 against the true set - an earlier corpus shared
+  the word "handle" across seven of eight phrasings, and both arms got the exact answer by grepping it.
+
 ## 1.3.0: first public release
 
 Getting ready to publish took three review rounds, each by independent AI reviewers:

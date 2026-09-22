@@ -27,10 +27,16 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - name: Compile
-        run: python -m py_compile server.py outline.py enforce.py install.py
+        run: python -m py_compile server.py outline.py enforce.py install.py backend.py search.py bench.py bench_fixture.py mock_backend.py
       - name: Unit tests
         run: python test_units.py
+      - name: Model-path tests (mock Ollama and OpenAI-compatible servers)
+        run: python test_models.py
       - name: Hook tests
         run: python test_enforce.py
       - name: Server tests (no Ollama on CI, so model checks are reported as SKIP)
         run: python test_server.py
+      - name: Benchmark parser and graders (spends nothing, starts no session)
+        run: python bench.py --self-check
+      - name: Benchmark fixtures (truth is right, and grep gets it wrong)
+        run: python bench_fixture.py

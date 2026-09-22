@@ -6,8 +6,8 @@ Only the latest release gets fixes.
 
 | Version | Supported |
 | ------- | --------- |
-| 1.3.x   | yes       |
-| < 1.3   | no        |
+| 1.4.x   | yes       |
+| < 1.4   | no        |
 
 ## Reporting a vulnerability
 
@@ -35,8 +35,11 @@ Know these before you install it:
   manipulate an AI. The local model can repeat it, and the server passes the model's prose to Claude marked
   as untrusted data. Only the `L<n>:` quotes are checked against the source, and they're checked for
   existence, not intent.
-- **Everything stays local.** The server talks only to Ollama on `127.0.0.1` (or whatever you set
-  `LOCAL_HELPER_OLLAMA` to). It never sends file contents anywhere else.
+- **Local by default, but it goes where you point it.** Out of the box the server talks only to Ollama on
+  `127.0.0.1`, and nothing leaves your machine. But `LOCAL_HELPER_BACKEND=openai` with a `LOCAL_HELPER_URL`
+  sends file contents, command output and search text to whatever address you configure, with
+  `LOCAL_HELPER_API_KEY` as a bearer token. Point it at a remote server only if you'd be comfortable sending
+  that code there.
 - **The hook runs on every Read, Bash and PowerShell call.** `install.py` writes it in Python's isolated
   mode (`-I`), so files in your project can't be imported into it. If it errors, or its folder is gone, it
   allows the call rather than blocking you.
