@@ -11,3 +11,4 @@ index.db
 runs/
 state/
 usage.jsonl
+*.log
