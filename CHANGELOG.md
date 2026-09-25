@@ -1,5 +1,21 @@
 # Changelog
 
+## Unreleased
+
+**Correction to 1.4.0's benchmark numbers.** The `fresh` token counts published with 1.4.0 were
+overstated by 1.00x to 2.69x per run (median 1.25x). Claude Code's stream sends one event per content
+block of a response, each carrying the same usage, and `bench.py` summed them all - so a response
+counted once or twice depending on whether its thinking block arrived separately. That inflated the
+arms unevenly. Corrected, from the 48 transcripts that survived (n=4 per cell):
+- `prose` (the hook's win): fresh -43%, cost -26% - not "-65% / -51%".
+- `noisy`: fresh +19%, cost +35% - not "+95% / +27%".
+- `log_count` and `log_semantic`: +4% and +2% fresh - not "+36%" and "+41%"; both inside the noise.
+- Forced use of the model tools: 1.0-3.0x the tokens and 30-88x the wall-clock - not "2-5x" and "28-104x".
+The direction of every finding holds. `bench.py` now counts each response once by its API message id
+(which matches the CLI's own session total on every saved transcript), `--self-check` fails if the old
+counting returns, and each run writes its transcripts to its own folder - a top-up batch had overwritten
+the first batch's, which is why 66 reported runs became 48 recomputable ones.
+
 ## 1.4.2
 
 - `test_server.py` compared the reported version against a hard-coded `"1.4.0"`, so bumping the version
@@ -82,7 +98,8 @@ had no case for either.
   shell permission allowlist in both arms, and a pinned model id. It reads the `stream-json` transcript, so
   tool calls and per-message usage are observed rather than inferred, and it refuses to start unless
   `server.py` answers MCP with all 9 tools. 66 valid runs, $5.54.
-- **The result: the hook pays, the local model does not.** On the one task where the baseline would otherwise
+- *(These figures were overstated by a counting bug; see "Unreleased" at the top for the corrected ones.)*
+  **The result: the hook pays, the local model does not.** On the one task where the baseline would otherwise
   read a 137KB corpus whole, cost fell **51%** (fresh tokens 131,655 -> 45,496) and the spread narrowed from
   26k-186k to 34k-88k. Everywhere else local-helper cost **+1% to +27%**. Across 84 sessions Claude called a
   local-helper tool **3 times**; forced to use them it spent **2-5x the tokens and 28-104x the wall-clock**.

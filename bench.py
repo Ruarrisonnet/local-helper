@@ -209,7 +209,9 @@ def child_env(data_dir):
 def parse_stream(text):
     """Read the NDJSON stream: real tool calls, real per-message usage, MCP status."""
     got = {"tools": [], "mcp": None, "offered": 0, "fresh": 0, "peak": 0, "denied": [],
-           "result": "", "cost": None, "turns": None, "is_error": False, "stop": None}
+           "result": "", "cost": None, "turns": None, "is_error": False, "stop": None,
+           "result_fresh": None}
+    usage_by_id = {}
     for line in text.splitlines():
         try:
             ev = json.loads(line)
@@ -222,10 +224,11 @@ def parse_stream(text):
         msg = ev.get("message")
         msg = msg if isinstance(msg, dict) else {}    # some events carry a bare string here
         if ev.get("type") == "assistant" and isinstance(msg.get("usage"), dict):
-            u = msg["usage"]
-            fresh = (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
-            got["fresh"] += fresh
-            got["peak"] = max(got["peak"], fresh + (u.get("cache_read_input_tokens") or 0))
+            # One API response arrives as one event PER CONTENT BLOCK (thinking, text, tool_use), each
+            # carrying the same usage. v1.4 summed every event, so a response counted once or twice
+            # depending on whether its thinking block came separately - which inflated `fresh` by up to
+            # 2x, unevenly between arms. Count each response once, keyed by its API message id.
+            usage_by_id[msg.get("id") or id(ev)] = msg["usage"]
         content = msg.get("content")          # a string on some messages, a block list on others
         for blk in content if isinstance(content, list) else []:
             if isinstance(blk, dict) and blk.get("type") == "tool_use":
@@ -237,6 +240,13 @@ def parse_stream(text):
             got["is_error"] = bool(ev.get("is_error"))
             got["stop"] = ev.get("terminal_reason") or ev.get("stop_reason")
             got["denied"] = [d.get("tool_name") for d in ev.get("permission_denials") or []]
+            ru = ev.get("usage") or {}       # the CLI's own session total: a cross-check on `fresh`
+            if ru:
+                got["result_fresh"] = (ru.get("input_tokens") or 0) + (ru.get("cache_creation_input_tokens") or 0)
+    for u in usage_by_id.values():
+        fresh = (u.get("input_tokens") or 0) + (u.get("cache_creation_input_tokens") or 0)
+        got["fresh"] += fresh
+        got["peak"] = max(got["peak"], fresh + (u.get("cache_read_input_tokens") or 0))
     return got
 
 
@@ -263,7 +273,7 @@ def run_one(task, arm, rep, runs_dir):
                "tools_used": sorted(set(g["tools"])), "helper_calls": len(helper_calls),
                "helper_tools": sorted(set(helper_calls)), "mcp_status": g["mcp"],
                "helper_tools_offered": g["offered"], "denied": g["denied"],
-               "answer": out.strip()[-300:], "raw": os.path.basename(raw),
+               "answer": out.strip()[-300:], "raw": os.path.relpath(raw, HERE).replace(os.sep, "/"),
                "backend": backend.kind(), "model": MODEL,
                "big_model": os.environ.get("LOCAL_HELPER_BIG", "qwen2.5-coder:7b-instruct-q3_K_M")}
         t = COUNT_TRUTH.get(task)
@@ -340,6 +350,16 @@ def self_check():
     ])
     g = parse_stream(stream + "\nnot json at all\n")
     assert g["fresh"] == 156, g["fresh"]                       # 4+100 + 2+50, no cache reads summed
+    # One API response arrives as one event per content block, all carrying the same usage and the
+    # same message id. v1.4 summed them, inflating `fresh` by up to 2.69x. Count each id once.
+    one_response = "\n".join(json.dumps({"type": "assistant", "message": {
+        "id": "msg_same", "usage": {"input_tokens": 2, "cache_creation_input_tokens": 5000,
+                                    "cache_read_input_tokens": 12000},
+        "content": [{"type": kind}]}}) for kind in ("thinking", "text", "tool_use"))
+    dup = parse_stream(one_response + "\n" + json.dumps(
+        {"type": "result", "result": "", "usage": {"input_tokens": 2, "cache_creation_input_tokens": 5000}}))
+    assert dup["fresh"] == 5002, f"one response counted {dup['fresh'] / 5002:.0f} times"
+    assert dup["fresh"] == dup["result_fresh"], "must agree with the CLI's own session total"
     assert g["peak"] == 3052, g["peak"]                        # last message only: 2+50+3000
     assert g["mcp"] == ["connected"], g["mcp"]
     assert g["offered"] == 2, g["offered"]
@@ -435,7 +455,10 @@ def main():
               f"{len(tasks)*len(arms)*a.reps} real sessions")
         return
     preflight(arms)
-    runs_dir = os.path.join(HERE, "bench_runs")
+    # one folder per invocation: rep-numbered names collided across batches, and a top-up run
+    # silently overwrote the first batch's transcripts
+    batch = time.strftime("%Y%m%d-%H%M%S")
+    runs_dir = os.path.join(HERE, "bench_runs", batch)
     os.makedirs(runs_dir, exist_ok=True)
     rows = []
     for rep in range(a.reps):
@@ -444,6 +467,7 @@ def main():
             random.Random(rep * 31 + hash(t) % 97).shuffle(order)   # never always baseline-first
             for arm in order:
                 row = run_one(t, arm, rep, runs_dir)
+                row["batch"] = batch
                 rows.append(row)
                 print(f"{t:13} {arm:9} rep{rep} ok={row['ok']!s:5} fresh={row['fresh']:>8,} "
                       f"peak={row['peak']:>8,} cost=${row['cost_usd'] or 0:.3f} "
