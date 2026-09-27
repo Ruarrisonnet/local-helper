@@ -1,5 +1,18 @@
 # Changelog
 
+## 1.5.2
+
+- Sets the version to 1.5.2. The 1.5.1 tag was pushed with the fix below but without its version bump -
+  the bump's own check refused an ambiguous match, and the rest of a chained command ran anyway - so the
+  server in that tag still reports 1.5.0. It is left as pushed rather than rewritten; use 1.5.2.
+
+## 1.5.1
+
+- `bench.py` recorded each transcript's path relative to the repo with `os.path.relpath`, which on Windows
+  raises when the two paths are on different drives. GitHub's Windows runners keep the checkout on `D:`
+  and the temp directory on `C:`, so v1.5's CI failed on both Windows jobs in `bench.py --self-check`
+  while Linux and macOS passed. A path on another drive is now kept absolute, and the self-check covers it.
+
 ## 1.5.0
 
 Every change in this release answers something the v1.4 benchmark measured, and the benchmark was run
