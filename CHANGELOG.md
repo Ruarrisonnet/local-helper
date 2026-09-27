@@ -42,7 +42,7 @@ up in any measured session.
 **Less fixed overhead.** Claude Code defers MCP tool schemas, loading a tool's description only when it
 is used, so the tool descriptions (about 1,200 tokens, estimated from their length) were never the fixed
 cost. The server's instructions paragraph, sent into every session, was: it is down from 879 characters
-to 408, and its advice now matches the benchmark - the instant tools are the useful ones, the model
+to 405 (the overhead was measured with a 408-character version), and its advice now matches the benchmark - the instant tools are the useful ones, the model
 tools a slow fallback.
 
 **`local_extract` recall varies more than 1.4.0 said.** 1.4.0 reported 91-93% from two runs. Six runs of
