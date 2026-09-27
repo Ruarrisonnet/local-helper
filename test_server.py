@@ -107,7 +107,7 @@ msgs = [
     {"jsonrpc": "2.0", "id": 9, "method": "tools/call", "params": {"name": "local_summarize", "arguments": {
         "path": TARGET, "max_words": 120, "question": summ_q}}},              # same as id 3 -> cache hit
     {"jsonrpc": "2.0", "id": 4, "method": "tools/call", "params": {"name": "local_extract", "arguments": {
-        "path": TARGET, "what": extract_what}}},
+        "path": TARGET, "what": extract_what, "full": True}}},     # recall is measured over every line
     {"jsonrpc": "2.0", "id": 5, "method": "tools/call", "params": {"name": "local_classify", "arguments": {
         "items": ["tests/test_login.py", "README.md", "src/auth.py", "package-lock.json", "docs/setup.md"],
         "labels": ["code", "test", "docs", "generated"]}}},
@@ -257,7 +257,7 @@ if MODEL_OK:
     for ln in body.split("\n")[1:]:
         if ln.startswith("| ") or not ln.strip():
             continue
-        if ln.startswith("VERIFIED EVIDENCE (server-checked: each line exists verbatim"):
+        if ln.startswith("VERIFIED EVIDENCE (server-checked: each line exists in the source"):
             in_evidence = True
         elif in_evidence and re.match(r"^L\d+: ", ln):
             continue

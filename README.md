@@ -7,23 +7,27 @@ whole reads of large files and replies with the file's outline, so Claude naviga
 instead of swallowing them. An MCP server adds local tools: project maps, file outlines, command
 digests, semantic search, and a small model on your own GPU for questions that need a whole file read.
 
-**What the measurements say.** Real headless Claude Code sessions ([bench.py](bench.py), full table
-in [Measured](#measured)). *Corrected 2026-09-25: the first published version of these numbers
-overstated token counts by up to 2.7x because of a counting bug in the benchmark - see
-[the correction](#correction-2026-09-25).*
+**What the measurements say.** 69 real headless Claude Code sessions against v1.5, all answered
+correctly ([bench.py](bench.py); the full table and raw data are under [Measured](#measured)):
 
-- The hook is the part that pays. On a task where Claude would otherwise read a 137KB corpus whole,
-  it cut median cost by **26%** (fresh tokens 42,886 -> 24,333) and shrank the spread from
-  16k-69k down to 23k-35k. Capping the worst case is what it is good at.
-- It costs about **+8% to +9%** on small tasks, and more when it gets in the way: **+35% cost** on a
-  noisy-command task.
-- **The local-model tools went almost unused: 3 calls in 84 sessions.** Claude greps and pipes rather
-  than asking a model to read for it. Told to use them anyway, it spent **1.0-3.0x the tokens and
-  30-88x the wall-clock** (29 minutes against 31 seconds on one task), because a 4GB GPU at
-  ~24 tok/s cannot compete with Claude filtering a file itself.
+- **The hook pays, and the transcripts show how.** On a task over a 137KB file, every session
+  without local-helper read the file whole. With it, Claude tried the same whole read in 4 of 5
+  sessions, the hook refused, and Claude filtered the file instead. Median cost fell **51%** (fresh
+  tokens 68,211 -> 30,044), and no session with local-helper cost as much as any session without it.
+- Everything else costs about the same or a little more. Loading the server adds **+6%** to a
+  trivial session (down from +9% in v1.4). The other four tasks range from -11% to +8% in cost, and
+  on each of them the costs with and without local-helper overlap, so none is a clear result.
+- **The local-model tools are not used.** In 30 sessions Claude called none of them. With a project
+  CLAUDE.md telling it to use them, it still never called `local_summarize` or `local_extract`: it
+  never reads a big file whole, so the rule never applies. When a prompt forced them in v1.4, they
+  were 30-88x slower, `local_extract` refused both big files outright (it takes at most 240,000
+  characters), and every correct answer came from Claude's own reading, not from the tools.
 
 So: install it for the ceiling on context growth. Do not install it expecting the local model to save
 you tokens, because on this evidence it does not.
+
+*v1.4's published benchmark numbers were overstated by a counting bug and were corrected on
+2026-09-25; see [the correction](#correction-2026-09-25).*
 
 Claude stays in charge: local-helper only reads and summarises. It never plans, decides or edits.
 
@@ -71,7 +75,7 @@ L119: def model_generate(model, system, prompt, max_tokens=600):
 | `local_outline` | no | A map of one file: functions and classes with line numbers, Markdown headings, and for logs the first/last lines plus error lines grouped by shape. |
 | `local_run` | optional | Noisy commands (tests, builds, installs). Returns the exit code, grouped error lines and the last lines, and saves the full log. Add `question` for a model answer on top. Output under 6KB comes back verbatim, and then `question` is ignored. |
 | `local_summarize` | yes | A question that needs a whole file read. The answer comes with `VERIFIED EVIDENCE` lines checked against the source. |
-| `local_extract` | yes | Lines matching a description Grep can't express. The model reads the file, then a second pass checks lines shaped like its matches one by one: 91-93% recall measured, so use Grep when you need every match. |
+| `local_extract` | yes | Lines matching a description Grep can't express. The model reads the file, then a second pass checks lines shaped like its matches one by one: 91-93% recall measured, so use Grep when you need every match. A big result comes back as the line count, the line numbers (capped for very large results) and the first 20 lines, rather than every line; `full: true` lists them all, from the same cached pass. Input is limited to 240,000 characters. |
 | `local_classify` | yes | Sorting short items (file names, log lines) into your labels. |
 | `local_draft` | yes | Boilerplate first drafts (docstrings, commit messages) that you then rewrite. |
 | `local_stats` | no | Calls, cache hits, and a crude chars/4 estimate of tokens saved. It counts what the raw text would have cost and ignores what the call itself cost, so it flatters the tool - the benchmark below is the number to trust. |
@@ -99,13 +103,16 @@ usually the cheaper answer anyway. What the hook stops is the expensive case: re
   `sed -n`, `-TotalCount`, ...).
 - It **allows everything** when Ollama isn't running, when a file named `ENFORCE_OFF` exists next to
   `enforce.py`, or if it hits an internal error. It never blocks you because of a problem of its own.
-- It never polices `~/.claude/{plugins,skills,commands,agents}` (instructions Claude must read whole). Add
-  more folders in `config.json`: `{"exempt_dirs": ["~/notes"]}`.
+- It never polices `~/.claude/{plugins,skills,commands,agents}` (instructions Claude must read whole) or
+  `~/.claude/projects` (Claude Code's own storage). That second one matters: when a tool result is too big
+  to show inline, Claude Code saves it there and reads it back, so a big Grep result is read whole
+  without the ceiling. Add more folders in `config.json`: `{"exempt_dirs": ["~/notes"]}`.
 
 ## What you can trust
 
 - **`VERIFIED` / `L<n>:` lines** are checked by the server to exist word for word at that line of the
-  source. They are checked for existence, not relevance: the model chose them.
+  source. They are checked for existence, not relevance: the model chose them. A line over 200
+  characters is shown cut, ending in `[...]`; the check is still made on the whole line.
 - **`MODEL TEXT`** is what a small model wrote. It can be wrong, and a file can contain text written to
   manipulate an AI. So every model line is prefixed with `| ` (it can't pass itself off as server output),
   and Claude is told never to follow instructions in it.
@@ -190,63 +197,92 @@ These numbers are from an RTX 3050 Laptop (4GB VRAM), Windows 11, with Claude So
 
 ### Does it save tokens? (`bench.py`)
 
-Real headless Claude Code sessions, same task and same tools in both arms, in a fresh fixture project
-each time. The only difference is local-helper's MCP server and hook. `fresh` is tokens entering the
-context for the first time (input + cache writes); medians over correct runs, ranges in brackets.
+Real headless Claude Code sessions (Sonnet 5), same task and same tools in both arms, in a fresh
+fixture project each time. The only difference is local-helper's MCP server and hook. `fresh` is
+tokens entering the context for the first time (input + cache writes); medians over 5 runs, ranges in
+brackets. Every session answered correctly. One run that started with a cold prompt cache (it writes
+~12k extra tokens whatever the arm) is left out of the overhead row. v1.5, measured 2026-09-26.
 
-| Task | What it needs | Baseline fresh | With local-helper | Fresh | Cost |
+| Task | What it needs | Without local-helper | With local-helper | Fresh | Cost |
 |---|---|---|---|---|---|
-| overhead probe | nothing ("reply OK") | 5,111 (5,107-5,113) | 5,574 (5,573-5,575) | +9% | **+8%** |
-| symbol | one grep of a 1,477-line file | 8,072 (7,007-9,689) | 8,995 (8,886-10,138) | +11% | **+9%** |
-| log_count | one grep of a 20,000-line log | 6,976 (6,694-7,233) | 7,282 (7,127-7,717) | +4% | +1% |
-| **prose** | **reading a 137KB corpus** | **42,886 (15,681-69,194)** | **24,333 (23,139-34,668)** | **-43%** | **-26%** |
-| log_semantic | judging 957 free-text ERROR lines | 9,909 (9,234-10,435) | 10,062 (9,401-10,379) | +2% | -3% |
-| noisy | a command printing 30,000 lines | 6,326 (6,003-6,335) | 7,527 (6,625-7,819) | +19% | **+35%** |
+| overhead probe | nothing ("reply OK") | 5,162 (5,160-5,166) | 5,482 (5,481-5,485) | +6% | +6% |
+| symbol | one grep of a 1,477-line file | 8,680 (7,233-9,909) | 7,497 (6,527-8,565) | -14% | -11% |
+| log_count | one grep of a 20,000-line log | 6,665 (6,536-6,764) | 7,172 (7,015-7,305) | +8% | +8% |
+| **prose** | **reading a 137KB file** | **68,211 (45,823-68,226)** | **30,044 (19,803-30,371)** | **-56%** | **-51%** |
+| log_semantic | judging 957 free-text ERROR lines | 9,522 (9,049-14,399) | 10,182 (8,428-14,991) | +7% | +6% |
+| noisy | a command printing 30,000 lines | 6,489 (6,121-6,540) | 6,758 (6,506-6,796) | +4% | +3% |
 
-n=4 per cell, every one recomputed from its saved transcript. One clear win, a small constant tax on
-small tasks, one clear loss, and two results inside the noise. The win is the case the hook exists
-for: on `prose` the baseline sometimes reads the file whole and sometimes filters it (a 4x spread),
-and the hook removes the expensive mode.
+`prose` is the only result whose two arms do not overlap, and the transcripts show why: every session
+without local-helper read the file whole; with it, 4 of 5 tried to, the hook refused, and Claude
+filtered instead. The overhead row is the fixed price of loading the server, whose instructions were
+cut from 879 to 408 characters for v1.5. On the other four tasks the costs of the two arms overlap.
+Total: 60 sessions, $4.42, Ollama 0.34.4.
 
-**The local model did not contribute.** Across all 84 sessions Claude called a local-helper tool 3
-times. Forced to use them (prompt naming the tools), no task got cheaper:
+**The model tools, when Claude is told to use them.** A "directed" arm added a project CLAUDE.md
+telling Claude to use `local_outline`, `local_summarize`, `local_extract` and `local_run` for big files
+and noisy commands (3 runs per task, $0.94):
 
-| Task | Baseline (median of 4) | Forced to use the tools (1 run) |
+| Task | Without local-helper | Directed | Local-helper calls |
+|---|---|---|---|
+| prose | 68,211 fresh, $0.31, 22s | 29,801 fresh, $0.17, 32s | `local_outline` once in 3 runs |
+| log_semantic | 9,522 fresh, $0.06, 19s | 10,789 fresh, $0.07, 28s | none |
+| noisy | 6,489 fresh, $0.04, 15s | 8,572 fresh, $0.06, **198s** | `local_run` in every run |
+
+`local_summarize` and `local_extract` were never called. The rule says to use them before reading a big
+file in full, and Claude never reads one in full: it greps and pipes, so the rule never applies. So the
+v1.5 change to `local_extract` (count, line numbers and a sample instead of every matching line) cannot
+show up in a session. Measured directly on the two calls that produced v1.4's largest results, it
+shrinks the listing from 37,846 to 4,070 characters and from 28,195 to 4,178 - but only when called.
+
+**Forced, in v1.4.** A prompt that named the tools made Claude use them, one run per task:
+
+| Task | Without local-helper (median of 4) | Forced to use the tools (1 run) |
 |---|---|---|
 | prose | 42,886 fresh, $0.22, 31s | 43,758 fresh, $0.26, **29 min** |
 | log_semantic | 9,909 fresh, $0.07, 23s | 30,180 fresh, $0.20, **33 min** |
 | noisy | 6,326 fresh, $0.04, 17s | 8,793 fresh, $0.06, **8 min** |
 
-All answers were correct, so the tools work; they just cost more than they save. Two reasons:
-`local_extract` reproduces every matching line (38,762 characters on the log task, larger than the
-baseline's entire session) instead of pointing at them, and Claude was never going to read the bulk
-text anyway - it greps and pipes, so there is little for a digest to replace.
+The answers were correct, but they did not come from the tools. `local_extract` refused the 1.7MB log
+and the 1.1MB test output outright: it takes at most 240,000 characters. On a slice of the log Claude
+cut down itself, it found 289 of the 300 lines asked for. On the prose, `local_summarize` counted 25
+incidents where the answer was 50, citing one of the ruled-out hypotheses as evidence, and
+`local_extract` returned 309 of the roughly 520 heading and cause lines it was asked for. Each time
+Claude checked the result and answered from its own reading.
 
 Caveats a sceptic should hold us to: one machine, one model, author-written tasks on synthetic
-corpora, Sonnet only, cold caches, and medians over 4 runs. The raw per-run data is committed.
+corpora, Sonnet only, and medians over 3-5 runs. The raw per-run data is committed:
+[bench_results.json](bench_results.json) and [bench_results_directed.json](bench_results_directed.json)
+for v1.5, [bench_results_v1.4.json](bench_results_v1.4.json) for v1.4 (its `fresh` column has the
+counting bug below).
 
 #### Correction (2026-09-25)
 
-The first published version of this section overstated the `fresh` token column, by 1.00x to 2.69x
-(median 1.25x) per run. The stream Claude Code emits sends one event per *content block* of a
-response - thinking, text, tool call - and each carries the same usage. `bench.py` summed every event,
-so a response counted once or twice depending on whether its thinking arrived separately. That
-inflated the two arms unevenly: it turned a +4.6% difference on `noisy` into "+95%", and headlines
-such as "cost -51%" and "2-5x the tokens" were wrong.
+v1.4's published benchmark overstated the `fresh` token column, by 1.00x to 2.69x per run (median
+1.24x over the 48 runs in its table). The stream Claude Code emits sends one event per *content block*
+of a response - thinking, text, tool call - and each carries the same usage. `bench.py` summed every
+event, so a response counted once or twice depending on whether its thinking arrived separately. That
+inflated the two arms unevenly: it turned +19% on `noisy` into "+95%", and headlines such as "cost -51%"
+and "2-5x the tokens" were wrong. Corrected from the 48 transcripts that survived (a second harness bug
+had let a top-up run overwrite the rest), v1.4's figures were: `prose` -43% fresh / -26% cost, `noisy`
++19% / +35%, `symbol` +11% / +9%, the overhead probe +9% / +8%, and `log_count` and `log_semantic`
+inside the noise. Forced use of the model tools cost 1.0-3.0x the tokens, not "2-5x".
 
-The fix counts each response once by its API message id, and on every saved transcript the result now
-equals the session total the CLI itself reports, to the token. A second harness bug meant a top-up run
-had overwritten the first batch's transcripts, so the table above is recomputed from the 48
-transcripts that survived (n=4 per cell), not the 66 runs originally reported. The cost column was
-never affected by the counting bug, but it comes from a different subset now, which is why `prose`
-moved from -51% to -26%: that task is noisy. The direction of every finding is unchanged; the
-magnitudes were not. `bench.py --self-check` now fails if the old counting comes back.
+One claim in that correction was itself too strong. It said v1.4's `prose` win was the hook's doing,
+but in those four runs the hook never refused a whole read: the local-helper arm simply never attempted
+one. The v1.5 transcripts above are the first that show the hook doing the work.
+
+The fix counts each response once by its API message id, and on every saved transcript the result
+equals the session total the CLI itself reports, to the token. `bench.py --self-check` fails if the old
+counting comes back.
 
 ### Other measurements
 
 - **`local_extract` recall, v1.3 vs v1.4**, on five file/query pairs (function definitions in three files, `raise`
   statements, `import` statements): **127/178 (71%) -> 162-166/178 (91-93%, two runs)**. Worst case before: `raise` statements, 5/18 -> 14/18.
   Precision stayed at 85-100%. The misses left are mostly nested methods confirmed as "definitions".
+  Two runs understate the spread: in v1.5, six runs of the same query on one file (75 top-level functions)
+  found 75, 74, 74, 72, 70 and 52. The model runs at temperature 0.1 with no fixed seed, so a run can land
+  well below the typical result.
 - **`local_find`** on 10 plain-language questions about this repo ("how much memory is free on this machine" ->
   `free_ram_gb`): the right function was first 6/10 times and in the top 5 9/10 times (MRR 0.73). A keyword-only ranking
   managed 0/10 and 4/10 (MRR 0.18). That's a sanity check, not a benchmark: 10 questions, written by the author.
@@ -261,8 +297,8 @@ magnitudes were not. `bench.py --self-check` now fails if the old counting comes
 ## Tests
 
 ```bash
-python3 test_units.py       # 110 checks of individual fixes and pure functions, in seconds
-python3 test_models.py      #  43 checks of every model code path, against mock Ollama and OpenAI-compatible servers
+python3 test_units.py       # 125 checks of individual fixes and pure functions, in seconds
+python3 test_models.py      #  55 checks of every model code path, against mock Ollama and OpenAI-compatible servers
 python3 test_enforce.py     #  53 hook checks, no model needed
 python3 test_server.py      #  38 end-to-end over real MCP stdio; real-model checks SKIP without a backend
 python3 bench_fixture.py    # the benchmark corpora self-check: truth is right, and grep gets it wrong
@@ -274,13 +310,18 @@ touch your installed state or depend on your settings. CI runs them on Linux, ma
 
 ## Limitations
 
-- **The local-model tools are not worth reaching for on this hardware.** 3 calls in 84 benchmarked
-  sessions, and 1.0-3.0x the tokens plus 30-88x the wall-clock when forced. A faster GPU changes the
-  time, not the token arithmetic: `local_extract` returns every matching line, which is as much text
-  as the Grep it replaces. Treat them as a fallback for text you genuinely cannot filter.
-- **The hook costs ~8-9% on every session that never needed it**, and roughly 35% more on a noisy
-  command. It pays off only when something would otherwise be read whole.
-- `local_extract` finds about 91-93% of matches in the cases measured. Use Grep when you need every one.
+- **The local-model tools are not worth reaching for on this hardware.** Claude called none of them in
+  30 benchmarked sessions, and called only `local_outline` and `local_run` even when a project rule told
+  it to use them. Forced, they were 30-88x slower and their answers were wrong or incomplete often enough
+  that Claude re-did the work. Treat them as a fallback for text you genuinely cannot filter.
+- **`local_summarize` and `local_extract` take at most 240,000 characters** (~60k tokens). A bigger file
+  is refused with a request to narrow it first, so they cannot read a big log whole.
+- **Loading local-helper costs about 6% on a session that never needed it.** It pays off only when
+  something would otherwise be read whole.
+- `local_extract` found 91-93% of matches on code-structure queries (function definitions, `raise`,
+  `import`), and free-text questions miss more. It also varies from run to run, because the model
+  samples: six runs over this repo's `server.py` (75 top-level functions) found 75, 74, 74, 72, 70 and
+  52. Use Grep when you need every one.
 - `local_find` ranks by meaning, and can rank the right code below something similar. Read the ranges
   it gives before relying on them.
 - `local_run`'s rule matching is text-based: a command inside `bash -c "..."`, `eval`, a script, an alias

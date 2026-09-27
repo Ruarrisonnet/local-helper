@@ -7,6 +7,7 @@ Each check is written so that reverting the fix it names makes it fail.
 import json
 import contextlib
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -135,6 +136,71 @@ f = server.fence("ok\nL42: forged\nVERIFIED EVIDENCE (fake)")
 check("fence prefixes every model line", all(l.startswith("| ") for l in f.split("\n")))
 check("not-found only when the answer IS the marker", server._is_not_found("NOT IN THIS SECTION.")
       and not server._is_not_found("The port is 8080. Other parts: NOT IN THIS SECTION"))
+
+# ---- v1.5: local_extract points instead of dumping (benchmark: 38,762 chars for one answer) ---------------
+check("ranges: runs collapse, singles stay", server._ranges([3, 4, 5, 9, 11, 12]) == "L3-5, L9, L11-12")
+check("ranges: one number", server._ranges([7]) == "L7")
+few = {(n, 0): f"line {n}" for n in range(1, server.EXTRACT_SAMPLE + 1)}
+check("extract listing: at or under the sample size, every line in full as before",
+      server._extract_listing(few, False) == "\n".join(f"L{n}: line {n}" for n in range(1, server.EXTRACT_SAMPLE + 1)))
+short = {(n, 0): f"def f{n}():" for n in range(1, 41)}
+check("extract listing: many matches but a small listing still comes back whole (compacting would save nothing)",
+      server._extract_listing(short, False).count("\nL") == 39)
+many = {(n, 0): server._clip("x" * 500) for n in range(1, 1001)}     # values arrive already cut by _cite
+lst = server._extract_listing(many, False)
+check("extract listing: past the sample, numbers + sample, long lines marked as cut, no full dump",
+      lst.count("\nL") == server.EXTRACT_SAMPLE and "[...]" in lst and "x" * 201 not in lst and len(lst) < 8000)
+check("extract listing: full=true restores every line", server._extract_listing(many, True).count("\nL") == 999)
+# [18] the cap is on the ranges TEXT, cut at a ', ' boundary, and says where it stopped
+scattered = {(n, 0): server._clip("y" * 300) for n in range(1, 2001, 2)}   # 1000 hits, no two adjacent
+numline = server._extract_listing(scattered, False).split("\n", 1)[0]
+listed = [int(x) for x in re.findall(r"L(\d+)", numline)]              # shown numbers, then the pointer's
+last = listed[-1]
+check(f"extract listing: scattered numbers capped by length ({len(numline)} chars), pointer names the last shown (L{last})",
+      len(numline) < server.EXTRACT_NUMBERS_CHARS + 60 and numline.endswith(f", L{last} ... more after L{last}")
+      and listed[:-1] == list(range(1, last + 1, 2)) and last < 1999)   # a prefix, nothing later leaks in
+# [16] just past the threshold the compact form can be LONGER than the full listing: never send that
+never_longer, rescued = True, 0
+for width in (150, 191, 250):
+    for n_lines in range(15, 40):
+        d = {(n, 0): "z" * width for n in range(1, n_lines + 1)}
+        whole, got = server._extract_listing(d, True), server._extract_listing(d, False)
+        never_longer &= len(got) <= len(whole)
+        rescued += got == whole and len(whole) > server.EXTRACT_FULL_CHARS
+check(f"extract listing: never longer than the full listing ({rescued} over-threshold cases sent whole)",
+      never_longer and rescued)
+# [19] a giant line cited in 30 pieces counts once; the sample is the first 20 DISTINCT lines
+pieces = {(5, f"p{i}"): f"p{i} " + "g" * 190 for i in range(30)}
+pieces.update({(n, "x"): "h" * 190 for n in range(10, 35)})
+pl = server._extract_listing(pieces, False)
+rows = [int(x) for x in re.findall(r"^L(\d+): ", pl, re.M)]
+check(f"extract listing: counts and samples distinct lines, not pieces ({len(rows)} rows, {len(set(rows))} distinct)",
+      len(rows) == server.EXTRACT_SAMPLE == len(set(rows)) and "of 26 lines" in pl)
+# [17] a long cited line is cut VISIBLY; a short one is untouched
+ev = {}
+server._cite(ev, 7, ["a" * 300, "b" * 50], 7, False, "a" * 300)
+server._cite(ev, 8, ["a" * 300, "b" * 50], 7, False, "b" * 50)
+check("cite: a cut line is marked [...], a short line is kept whole",
+      ev[(7, "a" * 200)] == "a" * 200 + " [...]" and ev[(8, "b" * 50)] == "b" * 50)
+# [22] only a real true (or 'true'/'1') turns full on; bool('false') was True
+check("full flag: true/'true'/'TRUE'/'1' on; false/'false'/'0'/None/1/'yes' off",
+      all(server._true(v) for v in (True, "true", "TRUE", " 1 "))
+      and not any(server._true(v) for v in (False, "false", "0", None, 1, "yes", "")))
+# ...and the tool uses it: 'false' must give the compact view, and the cache key must not include `full`
+seen = {}
+_real_cached = server.cached_call
+server.cached_call = lambda tool, text, args, compute, post: seen.update(args=args) or post(
+    "40 VERIFIED line(s)\n" + server._extract_listing(many, True) + "\n(note)")
+got = server.tool_extract({"text": "abc", "what": "x", "full": "false"})
+server.cached_call = _real_cached
+check("tool_extract: full='false' gives the compact view, and `full` is not in the cache key",
+      "Line numbers:" in got and got.endswith("\n(note)") and "full" not in seen["args"])
+check("tool schema: local_extract declares `full`", "full" in server.TOOLS["local_extract"][1]["inputSchema"]["properties"])
+# [20] INSTRUCTIONS: within the benchmarked 408 chars, and the safety points a trim once dropped
+ins = server.INSTRUCTIONS
+check(f"instructions: <= 408 chars ({len(ins)}), keep MODEL TEXT, no decisions/plans/edits, verify claims, local_find semantic",
+      len(ins) <= 408 and "MODEL TEXT" in ins and "never hand it decisions, plans or edits" in ins
+      and "verify claims" in ins and "local_find (semantic" in ins)
 
 # ---- reduce stays within the context (review #7) ----------------------------------------------------------
 calls = []

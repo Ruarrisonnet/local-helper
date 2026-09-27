@@ -1,20 +1,100 @@
 # Changelog
 
-## Unreleased
+## 1.5.0
 
-**Correction to 1.4.0's benchmark numbers.** The `fresh` token counts published with 1.4.0 were
-overstated by 1.00x to 2.69x per run (median 1.25x). Claude Code's stream sends one event per content
-block of a response, each carrying the same usage, and `bench.py` summed them all - so a response
-counted once or twice depending on whether its thinking block arrived separately. That inflated the
-arms unevenly. Corrected, from the 48 transcripts that survived (n=4 per cell):
-- `prose` (the hook's win): fresh -43%, cost -26% - not "-65% / -51%".
-- `noisy`: fresh +19%, cost +35% - not "+95% / +27%".
+Every change in this release answers something the v1.4 benchmark measured, and the benchmark was run
+again on the result: 69 sessions, every one answered correctly, $5.35 of Sonnet usage.
+
+**What the new benchmark shows.**
+- **The hook pays, with evidence this time.** On the task over a 137KB file, cost fell **51%** (fresh
+  tokens 68,211 -> 30,044) and no session with local-helper cost as much as any session without it.
+  Every session without local-helper read the file whole; with it, 4 of 5 tried to, the hook refused, and
+  Claude filtered instead. v1.4's transcripts never showed the hook refusing anything (see the correction
+  below), so this is the first direct evidence for what the README has been claiming.
+- **Fixed overhead down by a third:** +462 -> +321 tokens per session (+9% -> +6% on a trivial one).
+- **The noisy-command task went from +35% to +3%.** v1.4's instructions told Claude to use `local_run` for
+  noisy commands, and it did, slowly. v1.5's do not, and in 30 sessions it called no local-helper tool.
+- **The model tools are not used even on request.** With a project CLAUDE.md telling Claude to use them,
+  it called `local_outline` once and `local_run` three times in 9 sessions, and never `local_summarize` or
+  `local_extract`: it never reads a big file whole, so the rule never applies.
+
+**`local_extract` points instead of dumping.** On v1.4's log task it returned ~38,400 characters (about
+9,500 tokens) - every matching line in full, more than the whole session cost without local-helper.
+When the full listing would be long, it now returns the count, every verified line number (collapsed
+into ranges like `L40-42`) and the first 20 lines in full; `full: true` restores every line. On the two
+v1.4 calls with the largest results, the listing shrinks from 37,846 to 4,070 characters and from 28,195
+to 4,178. No benchmark session called `local_extract`, so this saving is real per call but did not show
+up in any measured session.
+
+**Less fixed overhead.** Claude Code defers MCP tool schemas, loading a tool's description only when it
+is used, so the tool descriptions (about 1,200 tokens, estimated from their length) were never the fixed
+cost. The server's instructions paragraph, sent into every session, was: it is down from 879 characters
+to 408, and its advice now matches the benchmark - the instant tools are the useful ones, the model
+tools a slow fallback.
+
+**`local_extract` recall varies more than 1.4.0 said.** 1.4.0 reported 91-93% from two runs. Six runs of
+one query over this repo's `server.py` (75 top-level functions) found 75, 74, 74, 72, 70 and 52: the model
+samples at temperature 0.1 with no fixed seed, and one run in six fell to 69%. The README now says so.
+
+**A "directed" benchmark arm.** Unprompted, Claude never calls the model tools, so nothing measured
+them. The new arm adds a project CLAUDE.md telling Claude to use them, which is how people actually run
+local-helper.
+
+**The benchmark harness, hardened by what went wrong running it.**
+- It stops at the account's usage limit. v1.5's first run hit the limit in the middle of a session and
+  then started 20 more that each failed at once and were recorded as results. `--resume` keeps the real
+  runs and does only the rest.
+- Each run records whether the prompt cache was warm when it started. The first session of a batch
+  writes the ~12k-token system prefix cold, whichever arm it is ($0.071 against $0.023 for the same
+  "reply OK"), and that swamps a small task.
+- Each run records the backend version: Ollama updated itself to 0.34.4 in the middle of this release's
+  benchmark, and the preflight check refused to start while the server was down.
+
+**Fixed after an independent review.** Three reviewers read the v1.5 changes and the published claims, and
+a fourth tried to refute every finding: 30 of 34 survived. The high one was about the docs: the
+2026-09-25 correction credited v1.4's `prose` win to the hook, which v1.4's transcripts do not show (see
+below). The code fixes, each with a check that fails if it is reverted (mutation-tested):
+- `local_extract`: `full: true` after a default call re-ran the whole model pass, because `full` was part
+  of the cache key, and the two answers could disagree. Both views now come from one cached pass. Near the
+  4,000-character threshold the compact answer could be longer than the full one; the shorter always
+  wins now. Counts and samples are by distinct line, so a giant line cited in 36 pieces counts once. The
+  line-number list is capped by length with a pointer to where it stops. `full` accepts only a real
+  `true` (the string `"false"` had meant true).
+- Cited lines longer than 200 characters were cut silently under a header saying each line "exists
+  verbatim". Cuts are now marked `[...]` and the header says so; grounding still checks the whole line.
+- The trimmed server instructions had dropped "never hand it decisions, plans or edits" and the advice to
+  verify its claims, and called `local_find` exact. Both are back, `local_find` is described as semantic
+  search, and the paragraph is 405 characters - inside the 408 the overhead was measured at.
+- `bench.py`: `--arms directed` skipped every preflight check; cold-cache runs went into the medians;
+  rows recorded no code version (they now carry hashes of the four files under test, and `--resume`
+  refuses rows from different code); an existing results file was overwritten without warning, and not
+  atomically; the usage-limit check matched ordinary answers mentioning a rate limit; a session with no
+  message id could be dropped from the count; a hung session crashed the run; resumed rows from other
+  tasks leaked into the summary; the arm order was not balanced across reps. All fixed.
+- `bench.py --self-check` briefly needed the repo's git tags (it built a real fixture); it now stubs the
+  fixture, so it runs in a shallow CI checkout or a ZIP download.
+
+**Correction to 1.4.0's benchmark numbers** (published 2026-09-25, restated here). The `fresh` token
+counts published with 1.4.0 were overstated by 1.00x to 2.69x per run (median 1.24x over the 48 runs
+in its table). Claude Code's stream sends one event per content block of a response, each carrying the
+same usage, and `bench.py` summed them all, so a response counted once or twice depending on whether
+its thinking block arrived separately. That inflated the arms unevenly. Corrected, from the 48
+transcripts that survived (n=4 per cell):
+- `prose`: fresh -43%, cost -26% - not "-65% / -51%".
+- `noisy`: fresh +19%, cost +35% - not "+95% / +27%". (The first version of the correction also said
+  "+4.6%" in one place; +19% is right.)
 - `log_count` and `log_semantic`: +4% and +2% fresh - not "+36%" and "+41%"; both inside the noise.
 - Forced use of the model tools: 1.0-3.0x the tokens and 30-88x the wall-clock - not "2-5x" and "28-104x".
-The direction of every finding holds. `bench.py` now counts each response once by its API message id
-(which matches the CLI's own session total on every saved transcript), `--self-check` fails if the old
-counting returns, and each run writes its transcripts to its own folder - a top-up batch had overwritten
-the first batch's, which is why 66 reported runs became 48 recomputable ones.
+  And those forced answers did not come from the tools: `local_extract` refused both big files (it takes
+  at most 240,000 characters), and where the tools did answer, Claude found them wrong or incomplete and
+  re-did the work. v1.4's README said "all answers were correct, so the tools work"; that was wrong.
+- The correction credited the `prose` win to the hook. In those runs the hook never refused a whole
+  read - the local-helper arm never attempted one - so that attribution was not supported. v1.5's
+  transcripts are the first that support it.
+`bench.py` now counts each response once by its API message id (which matches the CLI's own session
+total on every saved transcript), `--self-check` fails if the old counting returns, and each run writes
+its transcripts to its own folder - a top-up batch had overwritten the first batch's, which is why 66
+reported runs became 48 recomputable ones.
 
 ## 1.4.2
 
@@ -98,7 +178,7 @@ had no case for either.
   shell permission allowlist in both arms, and a pinned model id. It reads the `stream-json` transcript, so
   tool calls and per-message usage are observed rather than inferred, and it refuses to start unless
   `server.py` answers MCP with all 9 tools. 66 valid runs, $5.54.
-- *(These figures were overstated by a counting bug; see "Unreleased" at the top for the corrected ones.)*
+- *(These figures were overstated by a counting bug; see the correction under 1.5.0 for the corrected ones.)*
   **The result: the hook pays, the local model does not.** On the one task where the baseline would otherwise
   read a 137KB corpus whole, cost fell **51%** (fresh tokens 131,655 -> 45,496) and the spread narrowed from
   26k-186k to 34k-88k. Everywhere else local-helper cost **+1% to +27%**. Across 84 sessions Claude called a

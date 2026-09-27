@@ -1,0 +1,322 @@
+[
+ {
+  "task": "prose",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 0,
+  "ok": true,
+  "fresh": 43167,
+  "peak": 43155,
+  "cost_usd": 0.2220264,
+  "turns": 9,
+  "secs": 45.2,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "Grep",
+   "PowerShell",
+   "Read",
+   "ToolSearch",
+   "mcp__local-helper__local_outline"
+  ],
+  "helper_calls": 1,
+  "helper_tools": [
+   "mcp__local-helper__local_outline"
+  ],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": false,
+  "answer": "Those last 10 add 4 more: the client allowance, the write master's client slots, the channel to the records service, and the link to the relational tier. That makes 46 + 4 = 50.\n\nCOUNT=50",
+  "raw": "bench_runs/20260926-121017/prose-directed-rep0.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "truth": 50,
+  "said": 50,
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "log_semantic",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 0,
+  "ok": true,
+  "fresh": 10789,
+  "peak": 23145,
+  "cost_usd": 0.0674258,
+  "turns": 5,
+  "secs": 22.8,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "PowerShell",
+   "ToolSearch"
+  ],
+  "helper_calls": 0,
+  "helper_tools": [],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "Timeout templates: 56+52+51+51+47+43 = 300.\n\nCOUNT=300",
+  "raw": "bench_runs/20260926-121017/log_semantic-directed-rep0.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "truth": 300,
+  "said": 300,
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "noisy",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 0,
+  "ok": true,
+  "fresh": 8572,
+  "peak": 20926,
+  "cost_usd": 0.060044799999999995,
+  "turns": 5,
+  "secs": 266.2,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "Grep",
+   "PowerShell",
+   "ToolSearch",
+   "mcp__local-helper__local_run"
+  ],
+  "helper_calls": 1,
+  "helper_tools": [
+   "mcp__local-helper__local_run"
+  ],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "FAILED=7 FIRST=140",
+  "raw": "bench_runs/20260926-121017/noisy-directed-rep0.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "prose",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 1,
+  "ok": true,
+  "fresh": 30580,
+  "peak": 42928,
+  "cost_usd": 0.1782418,
+  "turns": 10,
+  "secs": 37.7,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "Grep",
+   "PowerShell",
+   "Read",
+   "ToolSearch"
+  ],
+  "helper_calls": 0,
+  "helper_tools": [],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "COUNT=50",
+  "raw": "bench_runs/20260926-121017/prose-directed-rep1.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "truth": 50,
+  "said": 50,
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "log_semantic",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 1,
+  "ok": true,
+  "fresh": 10471,
+  "peak": 22825,
+  "cost_usd": 0.0725152,
+  "turns": 6,
+  "secs": 28.8,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "PowerShell",
+   "ToolSearch"
+  ],
+  "helper_calls": 0,
+  "helper_tools": [],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "COUNT=300",
+  "raw": "bench_runs/20260926-121017/log_semantic-directed-rep1.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "truth": 300,
+  "said": 300,
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "noisy",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 1,
+  "ok": true,
+  "fresh": 8147,
+  "peak": 20503,
+  "cost_usd": 0.0523214,
+  "turns": 4,
+  "secs": 178.2,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "PowerShell",
+   "ToolSearch",
+   "mcp__local-helper__local_run"
+  ],
+  "helper_calls": 1,
+  "helper_tools": [
+   "mcp__local-helper__local_run"
+  ],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "FAILED=7 FIRST=140",
+  "raw": "bench_runs/20260926-121017/noisy-directed-rep1.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "prose",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 2,
+  "ok": true,
+  "fresh": 29022,
+  "peak": 41376,
+  "cost_usd": 0.1522848,
+  "turns": 6,
+  "secs": 27.2,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "Grep",
+   "PowerShell",
+   "Read",
+   "ToolSearch"
+  ],
+  "helper_calls": 0,
+  "helper_tools": [],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "COUNT=50",
+  "raw": "bench_runs/20260926-121017/prose-directed-rep2.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "truth": 50,
+  "said": 50,
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "log_semantic",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 2,
+  "ok": true,
+  "fresh": 10907,
+  "peak": 23263,
+  "cost_usd": 0.0705742,
+  "turns": 5,
+  "secs": 27.8,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "PowerShell",
+   "ToolSearch"
+  ],
+  "helper_calls": 0,
+  "helper_tools": [],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "COUNT=300",
+  "raw": "bench_runs/20260926-121017/log_semantic-directed-rep2.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "truth": 300,
+  "said": 300,
+  "batch": "20260926-121017"
+ },
+ {
+  "task": "noisy",
+  "kind": "bulk",
+  "arm": "directed",
+  "rep": 2,
+  "ok": true,
+  "fresh": 9042,
+  "peak": 21396,
+  "cost_usd": 0.0617912,
+  "turns": 5,
+  "secs": 197.6,
+  "is_error": false,
+  "stop": "completed",
+  "tools_used": [
+   "Grep",
+   "PowerShell",
+   "ToolSearch",
+   "mcp__local-helper__local_run"
+  ],
+  "helper_calls": 1,
+  "helper_tools": [
+   "mcp__local-helper__local_run"
+  ],
+  "mcp_status": [
+   "connected"
+  ],
+  "helper_tools_offered": 9,
+  "denied": [],
+  "prefix_cached": true,
+  "answer": "FAILED=7 FIRST=140",
+  "raw": "bench_runs/20260926-121017/noisy-directed-rep2.ndjson",
+  "backend": "ollama",
+  "model": "claude-sonnet-5",
+  "big_model": "qwen2.5-coder:7b-instruct-q3_K_M",
+  "batch": "20260926-121017"
+ }
+]

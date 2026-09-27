@@ -68,14 +68,70 @@ for kind in ("ollama", "openai"):
     check(t + "summarize: nothing found is reported plainly", "Nothing relevant found" in nf)
 
     # extract: grounding, recall on a regex request, real line numbers
-    _, ex, n_sections = server.extract_text(SOURCE, "/^def helper_/")
+    _, ex, n_sections = server.extract_text(SOURCE, "/^def helper_/", full=True)
     cited = [int(x) for x in re.findall(r"^L(\d+): def helper_", ex, re.M)]
     truth = [i + 1 for i, l in enumerate(SOURCE.split("\n")) if l.startswith("def helper_")]
     check(t + f"extract: all {len(truth)} matches found at their real lines ({n_sections} sections)", cited == truth)
 
+    # v1.5: by default, past EXTRACT_SAMPLE matches, the answer points instead of dumping - every line
+    # NUMBER is still there (as ranges), but only a sample comes back in full.
+    # These 40 short lines are ~1.1KB in full, under EXTRACT_FULL_CHARS, so they come back whole...
+    _, small, _ = server.extract_text(SOURCE, "/^def helper_/")
+    check(t + "extract default: a small listing comes back whole, not compacted",
+          [int(x) for x in re.findall(r"^L(\d+): def helper_", small, re.M)] == truth)
+    # ...and when the listing is big (forced here by lowering the budget), it points instead.
+    budget, server.EXTRACT_FULL_CHARS = server.EXTRACT_FULL_CHARS, 0
+    _, compact, _ = server.extract_text(SOURCE, "/^def helper_/", full=False)
+    # full=True must still list every line in full when compacting WOULD happen (budget 0): the default-
+    # budget check above can't tell whether `full` is wired through at all.
+    _, forced, _ = server.extract_text(SOURCE, "/^def helper_/", full=True)
+    check(t + "extract full=true with a zero budget: every line in full, no compacting",
+          [int(x) for x in re.findall(r"^L(\d+): def helper_", forced, re.M)] == truth and "Line numbers:" not in forced)
+    # Through the tool: the default call and the full=true call share ONE cached model pass, so the
+    # second makes no model calls and lists exactly the same lines.
+    model.log.clear()
+    r_compact = server.tool_extract({"text": SOURCE, "what": "/^def helper_/"})
+    calls_first = len(model.log)
+    r_full = server.tool_extract({"text": SOURCE, "what": "/^def helper_/", "full": True})
+    calls_second = len(model.log) - calls_first
+    # ...and the other order: full=true first, then a default call must be compacted FROM the cache
+    # (with the compacting applied on the cache-hit path, not just on a fresh computation).
+    other = SOURCE + "\n# a different text, so a different cache key"
+    model.log.clear()
+    server.tool_extract({"text": other, "what": "/^def helper_/", "full": True})
+    calls_full_first = len(model.log)
+    r_after = server.tool_extract({"text": other, "what": "/^def helper_/"})
+    check(t + "extract default after a full=true call: compacted from the cache, no model calls",
+          calls_full_first > 0 and len(model.log) == calls_full_first
+          and "CACHED" in r_after.split("\n")[0] and "Line numbers:" in r_after)
+    server.EXTRACT_FULL_CHARS = budget
+    via_tool = set()
+    for a, b in re.findall(r"L(\d+)(?:-(\d+))?", (re.search(r"^Line numbers: (.*)$", r_compact, re.M) or [""])[0]):
+        via_tool.update(range(int(a), int(b or a) + 1))
+    full_nums = [int(x) for x in re.findall(r"^L(\d+): ", r_full, re.M)]
+    check(t + f"extract full=true after a default call: served from the cache ({calls_second} model calls), same lines",
+          calls_first > 0 and calls_second == 0 and "CACHED" in r_full.split("\n")[0]
+          and via_tool and via_tool == set(full_nums) and len(full_nums) == len(set(full_nums)))
+    listed = set()
+    for a, b in re.findall(r"L(\d+)(?:-(\d+))?", (re.search(r"^Line numbers: (.*)$", compact, re.M) or [""])[0]):
+        listed.update(range(int(a), int(b or a) + 1))
+    in_full = re.findall(r"^L\d+: def helper_", compact, re.M)
+    check(t + f"extract default, big listing: all {len(truth)} line numbers listed, {len(in_full)} in full",
+          listed == set(truth) and len(in_full) == server.EXTRACT_SAMPLE and "full=true" in compact)
+
+    # A giant line is chunked into pieces, and a match in several pieces is several hit entries for ONE
+    # line. The header must count lines: two lines here, however many pieces of line 2 matched.
+    giant = "def helper_top():\n" + "x = [" + ", ".join(f"'helper_{i}'" for i in range(4000)) + "]"
+    _, gbody, _ = server.extract_text(giant, "/helper_/", full=True)
+    pieces_of_2 = len(re.findall(r"^L2: ", gbody, re.M))
+    head = re.match(r"(\d+) VERIFIED line", gbody)
+    check(t + f"extract header counts lines, not pieces ({head.group(1) if head else '?'} lines, "
+              f"{pieces_of_2} piece entries for L2)",
+          head and int(head.group(1)) == 2 and pieces_of_2 > 1)
+
     # second pass: a skimming model finds only 2 per section; pattern candidates + yes/no confirmation recover the rest
     model.lazy = True
-    _, lz, _ = server.extract_text(SOURCE, "/^def helper_/")
+    _, lz, _ = server.extract_text(SOURCE, "/^def helper_/", full=True)
     model.lazy = False
     lz_cited = [int(x) for x in re.findall(r"^L(\d+): def helper_", lz, re.M)]
     extra = re.search(r"\((\d+) of these were missed by the first pass", lz)
