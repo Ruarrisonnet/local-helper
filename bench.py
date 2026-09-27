@@ -284,6 +284,15 @@ def parse_stream(text):
     return got
 
 
+def repo_relative(path):
+    """A path relative to the repo when it can be, absolute when it cannot. On Windows relpath raises for a
+    path on another drive - which is where CI's temp dir is (C:) relative to its checkout (D:)."""
+    try:
+        return os.path.relpath(path, HERE).replace(os.sep, "/")
+    except ValueError:
+        return path
+
+
 def run_one(task, arm, rep, runs_dir):
     tmp = tempfile.mkdtemp(prefix=f"lh_bench_{task}_{arm}_")
     try:
@@ -318,7 +327,7 @@ def run_one(task, arm, rep, runs_dir):
                "tools_used": sorted(set(g["tools"])), "helper_calls": len(helper_calls),
                "helper_tools": sorted(set(helper_calls)), "mcp_status": g["mcp"],
                "helper_tools_offered": g["offered"], "denied": g["denied"], "prefix_cached": g["prefix_cached"],
-               "answer": out.strip()[-300:], "raw": os.path.relpath(raw, HERE).replace(os.sep, "/"),
+               "answer": out.strip()[-300:], "raw": repo_relative(raw),
                # the model's own final text, kept apart from `answer`'s stdout fallback: hit_limit
                # must not fire on some log line the CLI printed
                "result": g["result"].strip()[-300:], "result_fresh": g["result_fresh"],
@@ -535,6 +544,10 @@ def self_check():
         ["baseline", "helper", "directed"], ["helper", "directed", "baseline"], ["directed", "baseline", "helper"]]
     assert arm_order(arms3, tasks2, "noisy", 0) == ["helper", "directed", "baseline"]
     assert stray_env({"LOCAL_HELPER_DATA": "d", "LOCAL_HELPER_BIG": "m", "PATH": "p"}) == ["LOCAL_HELPER_BIG"]
+    assert repo_relative(os.path.join(HERE, "bench_runs", "x.ndjson")) == "bench_runs/x.ndjson"
+    if os.name == "nt":      # a path on another drive must not raise (v1.5's CI failed on exactly this)
+        other = ("Z:" if os.path.splitdrive(HERE)[0].upper() != "Z:" else "Y:") + "\\elsewhere\\x.ndjson"
+        assert repo_relative(other) == other
     tmp = tempfile.mkdtemp(prefix="lh_bench_check_")
     try:
         _check_rows_and_files(tmp)
